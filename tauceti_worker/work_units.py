@@ -38,6 +38,7 @@ from .config import (
     Config,
     Die,
     NoProgress,
+    debug,
     is_git_url,
     log,
     one_line,
@@ -334,17 +335,23 @@ def run_round(w: Worker, opts: RoundOpts) -> int:
     def in_scope(pr: int) -> bool:
         return not targets or pr in targets
 
+    # With --pr the operator asked about these PRs, so each reason is the answer; otherwise the
+    # per-PR skips are detail, and one line with the counts is what a reader needs.
+    say = log if targets else debug
     for pr, providers in sv.review_inflight:
         if not in_scope(pr):
             continue
-        log(f"  review #{pr}: a peer reviewer ({providers}) holds this head — skipping (no duplicate spend)")
+        say(f"  review #{pr}: a peer reviewer ({providers}) holds this head — skipping (no duplicate spend)")
     for pr, count in sv.review_capped:
         if not in_scope(pr):
             continue
         if count.startswith("?"):
             log(f"  review #{pr}: local ledger unreadable — skipping review (fail-closed); fix the ledger")
         else:
-            log(f"  review #{pr}: daily cap {count} reached — skipping until 00:00 UTC (no launch/clone)")
+            say(f"  review #{pr}: daily cap {count} reached — skipping until 00:00 UTC (no launch/clone)")
+    held, capped = len(sv.review_inflight), len(sv.review_capped)
+    if not targets and (held or capped):
+        log(f"  review: skipping {held} PR(s) a peer reviewer holds and {capped} at the daily cap")
 
     # Explain why a fix-focused worker has nothing to fix: for each of the contributor's own PRs that is
     # not an actionable fix candidate, say why (awaiting first review, head moved, all green, attempts
@@ -417,7 +424,7 @@ def run_round(w: Worker, opts: RoundOpts) -> int:
         if deferred:
             waits = [REVIEW_AFFINITY_GRACE_S - max(0.0, stamp - c.ready_at) for c in deferred if c.ready_at is not None]
             next_wait = max(0, int(min(waits))) if waits else REVIEW_AFFINITY_GRACE_S
-            log(
+            debug(
                 f"  review: deferring {len(deferred)} PR(s) for their previous reviewers; "
                 f"next first-refusal window expires in {next_wait // 60}m {next_wait % 60:02d}s"
             )
@@ -842,10 +849,11 @@ def do_review(w: Worker, sv: Survey, c: Candidate, opts: RoundOpts, bubble: bool
         # round, so it does not consume the review-round budget.
         if c.contest_reply_id and not w.gh.add_reaction(c.contest_reply_id):
             log(f"  review #{pr}: contest claim (👀) failed to post — a peer may double-review")
-        log(f"  review #{pr}: author contest on {c.contest} @ {head[:12]}, reviewers={reviewers}")
+        log(f"  review #{pr}: answering the author's contest on {c.contest}")
+        debug(f"  review #{pr}: contest @ {head[:12]}, reviewers={reviewers}")
     else:
         nrnd = w.rs.review_rounds(pr, w.counters)
-        log(f"  review round {nrnd + 1} @ {head[:12]}, reviewers={reviewers} (CI retires at the cap)")
+        debug(f"  review round {nrnd + 1} @ {head[:12]}, reviewers={reviewers} (CI retires at the cap)")
     try:
         if bubble:
             rc = review_in_bubble(w, pr, head, reviewers, opts)
@@ -875,7 +883,7 @@ def do_review(w: Worker, sv: Survey, c: Candidate, opts: RoundOpts, bubble: bool
                 logf,
                 f"review #{pr}",
             )
-        log(f"  review #{pr}: engine rc={rc}")
+        debug(f"  review #{pr}: engine rc={rc}")
         if rc == 0:
             # The engine posted a verdict this round (scoreboard + threads are on the PR now), so clear
             # the "errored without posting a verdict" streak up front — BEFORE the publish step, which is
@@ -1048,7 +1056,7 @@ def _sync_review_outbox(w: Worker, pr: int) -> int:
     p = subprocess.run(argv, capture_output=True, text=True)
     if p.returncode == 0:
         m = re.search(r"synced (\d+) file", (p.stdout or "") + (p.stderr or ""))
-        log(f"  review #{pr}: synced {m.group(1) if m else '?'} record(s) to TauCetiData")
+        debug(f"  review #{pr}: synced {m.group(1) if m else '?'} record(s) to TauCetiData")
     else:
         logf = w.cfg.logdir / f"sync-{pr}-{time.strftime('%Y%m%d-%H%M%S')}.log"
         try:

@@ -21,7 +21,7 @@ if TYPE_CHECKING:  # annotations only; importing at runtime would invert the lay
     from .work_units import RoundOpts, Worker
 
 from . import build_caches
-from .config import Config, Die, NoProgress, log
+from .config import Config, Die, NoProgress, debug, log
 from .constants import (
     AUTHORING_DEFAULTS,
     CLAUDE_CMD,
@@ -48,7 +48,7 @@ from .quota import (
     mirror_creds,
 )
 from .review_diagnostics import failure_summary
-from .runtime_status import report_failure
+from .runtime_status import report_failure, report_runtime
 from .transcript import AgentTranscriptRenderer
 from .usage import UsageError, kiro_data_dir, kiro_process_env, snapshot_kiro_auth_db
 
@@ -819,14 +819,19 @@ def run_agent_proc(
         return rc
     logdir.mkdir(parents=True, exist_ok=True)
     logf = logdir / f"{label}-{time.strftime('%Y%m%d-%H%M%S')}.log"
-    log(f"{label}: output → {logf}  (run with --stream to watch live)")
+    debug(f"{label}: output → {logf}  (run with --stream to watch live)")
+    report_runtime(round_log=str(logf))
     with open(logf, "a", encoding="utf-8", errors="replace") as f:
         rc = run_rendered(f)
     if rc != 0:
-        log(f"{label}: exited {rc}; last lines of {logf.name}:")
-        for line in tail:
-            print("    " + line)
         summary = next((line.strip() for line in reversed(tail) if line.strip()), "")
+        log(
+            f"{label.removeprefix('agent-')} agent failed (exit {rc}): {summary or 'no output'}  — {logf}",
+            level="error",
+        )
+        debug(f"{label}: exited {rc}; last lines of {logf.name}:")
+        for line in tail:
+            debug("    " + line)
         reason = f"{label.removeprefix('agent-')} agent exited with status {rc}"
         if summary:
             reason += f": {summary}"
@@ -844,19 +849,19 @@ def run_to_logfile(argv: list[str], logf: Path, label: str) -> int:
     if os.environ.get("TAUCETI_STREAM"):
         return subprocess.run(argv).returncode
     logf.parent.mkdir(parents=True, exist_ok=True)
-    log(f"  {label}: engine output → {logf}  (run with --stream to watch live)")
+    debug(f"  {label}: engine output → {logf}  (run with --stream to watch live)")
+    report_runtime(round_log=str(logf))
     with open(logf, "ab") as f:
         rc = subprocess.run(argv, stdout=f, stderr=subprocess.STDOUT).returncode
     if rc != 0:
-        log(f"{label}: exited {rc}; last lines of {logf.name}:")
-        tail: list[str] = []
+        summary = failure_summary(logf)
+        log(f"{label} failed (exit {rc}): {summary or 'no diagnostic in the output'}  — {logf}", level="error")
+        debug(f"{label}: exited {rc}; last lines of {logf.name}:")
         try:
-            tail = logf.read_text(errors="replace").splitlines()[-20:]
-            for line in tail:
-                log("    " + line)
+            for line in logf.read_text(errors="replace").splitlines()[-20:]:
+                debug("    " + line)
         except OSError:
             pass
-        summary = failure_summary(logf)
         reason = f"{label} exited with status {rc}"
         if summary:
             reason += f": {summary}"

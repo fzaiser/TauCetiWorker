@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import console
 from .constants import ROADMAP
 from .paths import HERE, RUNTIME_ROOT
 
@@ -248,9 +249,14 @@ def one_line(text: str, limit: int = 200) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1] + "\u2026"
 
 
-def log(msg: str) -> None:
+def log(msg: str, *, level: str = "info") -> None:
+    """A log line. The file and a plain (piped or managed) console get every line; an interactive
+    terminal renders it (see console) and hides `debug` lines unless --verbose."""
     line = f"{time.strftime('%F %T')} tauceti: {msg}"
-    print(line, file=sys.stderr, flush=True)
+    if console.human():
+        console.emit(msg, level)
+    else:
+        print(line, file=sys.stderr, flush=True)
     if _LOG_FH is not None:
         try:
             _LOG_FH.write(_ANSI_RE.sub("", line) + "\n")
@@ -258,12 +264,17 @@ def log(msg: str) -> None:
             pass
 
 
+def debug(msg: str) -> None:
+    """Detail worth keeping on disk but not worth a person's attention: paths, per-PR skips, tails."""
+    log(msg, level="debug")
+
+
 _RED, _RESET = "\033[1;31m", "\033[0m"
 
 
 def warn_red(msg: str) -> None:
     """A bright-red, attention-demanding log line (a PR the automation can't make progress on)."""
-    log(f"{_RED}⚠ {msg}{_RESET}")
+    log(f"{_RED}⚠ {msg}{_RESET}", level="error")
 
 
 class Die(Exception):

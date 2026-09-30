@@ -235,6 +235,13 @@ def add_work_flags(p: argparse.ArgumentParser) -> None:
         "default redirects it to a file under logs/ and prints the path (or $TAUCETI_STREAM=1)",
     )
     p.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="show detail lines on the terminal too (per-PR skips, log paths, output tails); "
+        "the log file always has them (or $TAUCETI_VERBOSE=1)",
+    )
+    p.add_argument(
         "--roadmap-only",
         dest="roadmap_only",
         default=None,
@@ -792,6 +799,8 @@ def cmd_work(args, *, only: list[str], agent: str, one_round: bool, prs: tuple[i
     # children inherit it.
     if getattr(args, "stream", False):
         os.environ["TAUCETI_STREAM"] = "1"
+    if getattr(args, "verbose", False):
+        os.environ["TAUCETI_VERBOSE"] = "1"
     # The undocumented review throttles. Resolve them here — before the loop branch below, which never
     # builds a RoundOpts of its own — and pin the effective values in the env, which is how each
     # `_round` child (and a managed worker's process tree) inherits them.

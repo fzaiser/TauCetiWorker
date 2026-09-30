@@ -304,6 +304,19 @@ is never included. A round redirects this transcript to a timestamped file under
 `logs/` and prints the path, tailing it if the agent exits non-zero. Pass
 `--stream` to watch the identical transcript live instead.
 
+### Reading the output
+
+In a terminal, `tauceti work --loop` shows one line when a round starts (what it
+picked, on which PR, with which agent) and one when it ends: a green check with
+the time it took, a dot with the reason nothing was done, or a red cross with the
+diagnosis and the log to open. While the round runs, a status line at the bottom
+shows what it is doing, for how long, and how many rubrics the review engine has
+judged. Back-off lines say when the next round starts. Per-PR skips, log paths,
+and output tails are detail: pass `-v` to see them, or read the per-worker file
+under `logs/`, which always has every line with full timestamps. Anything that
+is not an interactive terminal (a pipe, a persistent worker's console) gets that
+plain form too.
+
 ## Persistent workers
 
 Persistent workers are declarative and do not belong to a terminal session. You

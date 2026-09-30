@@ -6,15 +6,18 @@ from __future__ import annotations
 import atexit
 import fcntl
 import os
+import re
 import signal
 import subprocess
 import sys
 import time
 
+from . import console
 from .config import Config, Die, log
 from .constants import CLAIM_HEARTBEAT_S, CLAIM_TTL_S, ROUND_TIMEOUT
 from .github import claims_repo
 from .paths import CLAIM_SH, self_argv, self_env
+from .runtime_status import runtime_snapshot
 
 # ============================================================================
 # Round lifecycle — flock (one round per worker), signal handling, cleanup, and
@@ -283,13 +286,66 @@ def cmd_heartbeat(args) -> int:
             return 0  # lease lost → stop renewing so it can expire
 
 
+def _wait_showing_status(p: subprocess.Popen, timeout: int) -> int:
+    """p.wait(timeout), and on an interactive terminal a status line rewritten every two seconds
+    meanwhile: what the round is doing, for how long, and how far its engine or agent has got."""
+    if not console.human():
+        return p.wait(timeout)
+    started = time.time()
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(p.args, timeout)
+        try:
+            return p.wait(min(2.0, remaining))
+        except subprocess.TimeoutExpired:
+            console.status(_round_status(started))
+
+
+def _round_status(started: float) -> str:
+    snap = runtime_snapshot()
+    phase, target = snap.get("phase"), console.short_target(snap.get("target"))
+    doing = " ".join(part for part in (phase, target) if part) or str(snap.get("state") or "running").replace("-", " ")
+    parts = [f"⏳ {console.hms(time.time() - started)}", doing]
+    round_log = snap.get("round_log")
+    progress = _engine_progress(round_log) if phase == "review" else None
+    if progress:
+        parts.append(progress)
+    if round_log:
+        parts.append(f"log: {round_log}")
+    return "  ·  ".join(parts)
+
+
+_RUBRIC_DONE_RE = re.compile(r"^\[[\w-]+\] \S+ rc=\d+ ", re.M)
+
+
+def _engine_progress(round_log: object) -> str | None:
+    """How far the review engine has got, from the per-rubric lines it prints as each verdict lands."""
+    if not round_log:
+        return None
+    try:
+        with open(round_log, "rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, stream.tell() - 65536))
+            text = stream.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    done = len(_RUBRIC_DONE_RE.findall(text))
+    if done:
+        return f"{done} rubric(s) judged"
+    if "=== running review" in text:
+        return "judging the first rubric"
+    return "preparing the workspace"
+
+
 def run_round_subprocess(argv_tail: list[str], timeout: int = ROUND_TIMEOUT) -> int:
     """Run one round as a child under a hard timeout; tear down the group on expiry. Used by the loop.
     Maps a timed-out round to rc 124, a SIGKILL-after-grace to 137 (matching the shell's `timeout`)."""
     p = spawn_round(argv_tail)
     pgid = p.pid  # spawn_round's start_new_session ⇒ the round leads its own group; pgid == leader pid
     try:
-        return p.wait(timeout)
+        return _wait_showing_status(p, timeout)
     except subprocess.TimeoutExpired:
         log(f"round timed out after {timeout}s — tearing down")
         kill_round_group(p)
@@ -299,6 +355,7 @@ def run_round_subprocess(argv_tail: list[str], timeout: int = ROUND_TIMEOUT) -> 
         kill_round_group(p)
         raise
     finally:
+        console.clear_status()
         # Even a round that exits 0 can leave the agent's backgrounded build-waiters alive; the timeout
         # path's kill_round_group never runs for it. Sweep the group on EVERY exit so a leaked poll-loop
         # lives at most one round, not forever (a no-op once kill_round_group already cleared the group).

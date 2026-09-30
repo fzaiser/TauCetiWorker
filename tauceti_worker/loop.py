@@ -10,6 +10,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import console
 from .agents import resolve_authoring_profile
 from .config import Config, NoProgress, log, warn_red
 from .constants import (
@@ -111,6 +112,7 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
                 failure_code=None,
                 failure_log=None,
                 failure_scope=None,
+                round_log=None,
             )
             # 1) Decide the model and whether to run this cycle. `pending_init` means Claude was picked
             # while a window of it is reset-but-unopened: the round is authorized to spend ONE small
@@ -243,7 +245,17 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
             if source is not None:
                 tail += ["--source", source]
             report_runtime("surveying", detail="selecting the next work unit", next_action_at=None)
+            started = time.time()
             rc = run_round_subprocess(tail)
+            elapsed = time.time() - started
+            failed = runtime_snapshot()
+            published = failed.get("failure_reason")
+            reason = (
+                str(published)
+                if published
+                else ("round timed out" if rc in (124, 137) else f"round exited with status {rc}")
+            )
+            _round_outcome(rc, failed, reason, elapsed)
 
             # 3) Settle: productive → short pause; no-progress/timeout/error → escalating back-off.
             if rc == 0:
@@ -257,13 +269,6 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
                 streak += 1
                 nap = min(BACKOFF_BASE * (1 << min(streak, 5)), BACKOFF_MAX)
                 tag = "timed out" if rc in (124, 137) else ("no progress" if rc == EX_NOPROGRESS else f"rc={rc}")
-                failed = runtime_snapshot()
-                published = failed.get("failure_reason")
-                reason = (
-                    str(published)
-                    if published
-                    else ("round timed out" if rc in (124, 137) else f"round exited with status {rc}")
-                )
                 # Backing off suits a round that found nothing, waited on a provider, or ran out of time:
                 # the next round may well differ. It does not suit a round that says every round on this
                 # host would fail the same way (scope "machine"), nor an error that has now ended several
@@ -282,7 +287,10 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
                     )
                     final_detail = why
                     return EX_STUCK
-                log(f"round {tag}; no-progress streak={streak} — backing off {nap}s")
+                log(
+                    f"round {tag}; no-progress streak={streak} — backing off {nap}s, "
+                    f"next round at {console.clock(time.time() + nap)}"
+                )
                 report_runtime(
                     "backoff",
                     detail=reason,
@@ -300,6 +308,22 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
     finally:
         report_runtime("stopping", detail=final_detail, phase=None, target=None, next_action_at=None)
         signal.signal(signal.SIGTERM, previous_sigterm)
+
+
+def _round_outcome(rc: int, snap: dict, reason: str, elapsed: float) -> None:
+    """One line per round, in one shape: what ran, how it ended, how long it took."""
+    phase, target = snap.get("phase"), console.short_target(snap.get("target"))
+    what = " ".join(part for part in (phase, target) if part) or "round"
+    took = console.hms(elapsed)
+    if rc == 0:
+        log(f"✓ {what} done in {took}", level="ok")
+    elif rc == EX_NOPROGRESS:
+        log(f"· no progress after {took}: {reason}")
+    elif rc in (124, 137):
+        log(f"✗ {what} timed out after {took}", level="error")
+    else:
+        where = f"  — {snap['failure_log']}" if snap.get("failure_log") else ""
+        log(f"✗ {what} failed after {took}: {reason}{where}", level="error")
 
 
 def _ignore_quota_verdict(chosen: str | None, prov: Provider | None) -> str:
