@@ -30,7 +30,8 @@ def opts(only):
 
 # Only `lake` is absent; gh/git/uvx present so preflight reaches the toolchain gate.
 tc.cli._have = lambda tool: tool != "lake"
-CFG = SimpleNamespace()  # review-host preflight never touches cfg (uses_fork excludes review)
+tc.cli.engine_selfcheck = lambda state: (True, "stubbed")  # the engine check is its own test
+CFG = SimpleNamespace(state=Path("/nonexistent"))  # only the engine check reads cfg on the review path
 
 raised = False
 try:

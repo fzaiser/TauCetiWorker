@@ -310,6 +310,33 @@ def clear_review_failure(state: Path, pr: int) -> None:
     _path(state, pr).unlink(missing_ok=True)
 
 
+def drop_last_review_attempt(state: Path, pr: int) -> None:
+    """Forget the most recent retained attempt: it turned out not to be the PR's failure."""
+    previous = read_review_failure(state, pr)
+    attempts = previous.get("attempts") if isinstance(previous.get("attempts"), list) else []
+    if len(attempts) <= 1:
+        clear_review_failure(state, pr)
+        return
+    atomic_json(_path(state, pr), {**previous, "attempts": attempts[:-1]})
+
+
+_KEY_SUBS = (
+    (re.compile(r"#\d+"), "#N"),
+    (re.compile(r"\b[0-9a-f]{7,40}\b"), "SHA"),
+    (re.compile(r"/[^\s'\"]+"), "PATH"),
+    (re.compile(r"\d+"), "N"),
+)
+
+
+def failure_key(summary: str) -> str:
+    """The failure with everything specific to one attempt removed — PR number, shas, paths, counts —
+    so two attempts on different PRs can be compared for having died the same way."""
+    text = sanitize_failure(summary).lower()
+    for pattern, replacement in _KEY_SUBS:
+        text = pattern.sub(replacement, text)
+    return " ".join(text.split())
+
+
 def public_review_failure(value: dict) -> str:
     """Compact public account built only from fixed labels; never publish subprocess text."""
     attempts = value.get("attempts") if isinstance(value.get("attempts"), list) else []
