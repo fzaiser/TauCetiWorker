@@ -501,7 +501,7 @@ def _checkout_head(cfg: Config) -> str | None:
     return p.stdout.strip() or None if p.returncode == 0 else None
 
 
-def log_round_file_changes(cfg: Config, pre_head: str | None) -> None:
+def log_round_file_changes(cfg: Config, pre_head: str | None, since: float | None = None) -> None:
     """Record what the round actually did to the working tree, from git rather than from the log.
 
     The transcript is not a reliable answer to "what did this round write". An agent may edit through
@@ -514,6 +514,11 @@ def log_round_file_changes(cfg: Config, pre_head: str | None) -> None:
     `pre..HEAD` and the tree is clean; a round that died mid-edit left the tree dirty and committed
     nothing. Reporting only one of the two would miss whichever case actually occurred.
 
+    Only the round's own commits count. A round refreshes the checkout to canonical main before the
+    agent starts, so `pre..HEAD` also spans whatever upstream merged since the previous round — on a
+    busy day thousands of files the agent never touched. Commits already on origin/main, and commits
+    older than the round (`since`), are therefore left out.
+
     Best effort throughout: this is a log line. Any git failure is silently nothing rather than an
     error on a round that may well have succeeded."""
 
@@ -524,7 +529,12 @@ def log_round_file_changes(cfg: Config, pre_head: str | None) -> None:
             return ""
         return p.stdout if p.returncode == 0 else ""
 
-    committed = git("diff", "--stat", f"{pre_head}..HEAD") if pre_head else ""
+    committed = ""
+    if pre_head:
+        window = [f"--since={time.strftime('%Y-%m-%dT%H:%M:%S%z', time.localtime(since))}"] if since else []
+        upstream = ["--not", "origin/main"] if git("rev-parse", "--verify", "-q", "origin/main").strip() else []
+        own = git("log", "--format=%H", *window, f"{pre_head}..HEAD", *upstream).split()
+        committed = git("diff", "--stat", f"{own[-1]}^..HEAD") if own else ""
     dirty = [ln for ln in git("status", "--porcelain").splitlines() if ln.strip()]
     if not committed.strip() and not dirty:
         return
@@ -726,6 +736,9 @@ def dispatch(stage: str, w: Worker, sv: Survey, c: Candidate, opts: RoundOpts) -
             f"sandbox={'bubble' if bubble else 'host'}"
         )
         return 0
+    # Name the stage before anything below can fail, so a loop can attribute a preflight failure (a
+    # model the account lacks, a binary off PATH) to this stage rather than to the round as a whole.
+    report_runtime("preparing", phase=stage, target=f"PR #{c.pr}" if c.pr else None, next_action_at=None)
     profile = _effective_authoring_profile(opts) if stage != "review" else None
     kiro_probe_profile = profile
     if stage == "review" and opts.work_model == "kiro":
@@ -817,9 +830,10 @@ def dispatch(stage: str, w: Worker, sv: Survey, c: Candidate, opts: RoundOpts) -
     report_runtime("running", phase=stage, target=what, detail=detail, next_action_at=None)
     pre = _progress_snapshot(w, c) if stage in PROGRESS_GUARDED else None
     pre_head = _checkout_head(w.cfg) if (stage in FILE_CHANGE_STAGES and not bubble) else None
+    pre_time = time.time()
     rc = fn(w, sv, c, opts, bubble)
     if stage in FILE_CHANGE_STAGES and not bubble:
-        log_round_file_changes(w.cfg, pre_head)
+        log_round_file_changes(w.cfg, pre_head, since=pre_time)
     # A model round that exits 0 but leaves no mark on GitHub did no real work. Usually benign: another
     # worker pushed the branch first and safe-push declined rather than clobber, or the agent chose not
     # to act. Surface it as no-progress (so the loop backs off) but say so plainly and point at the log.

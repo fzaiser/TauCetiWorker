@@ -82,7 +82,7 @@ def run(sequence, *, repeat=False, explicit=False):
                 selected = tc.resolve_codex_model_access(cfg, profile)
                 error = None
             except tc.NoProgress as exc:
-                selected, error = None, str(exc)
+                selected, error = None, exc
             if repeat and selected is not None:
                 selected_again = tc.resolve_codex_model_access(cfg, profile)
             else:
@@ -107,10 +107,23 @@ check("probe prompt is trivial, not an authoring prompt", argv[-1], "Reply with 
 check("probe closes stdin", kwargs.get("stdin"), subprocess.DEVNULL)
 check("probe strips API-key billing", "OPENAI_API_KEY" in kwargs.get("env", {}), False)
 
-selected, again, error, calls, remaining = run([UNAVAILABLE, UNAVAILABLE], repeat=True)
-check("two confirmed entitlement misses select Luna", (selected.model, error), (LUNA, None))
-check("Luna decision is cached without a third request", (again.model, len(calls), len(remaining)), (LUNA, 2, 0))
-check("both confirmations probe Sol only", [c[0][c[0].index("--model") + 1] for c in calls], [SOL, SOL])
+selected, again, error, calls, remaining = run([UNAVAILABLE, UNAVAILABLE, OK], repeat=True)
+check("two confirmed entitlement misses select Luna once Luna answers", (selected.model, error), (LUNA, None))
+check("Luna decision is cached without a fourth request", (again.model, len(calls), len(remaining)), (LUNA, 3, 0))
+check("Sol is confirmed twice, then Luna probed", [c[0][c[0].index("--model") + 1] for c in calls], [SOL, SOL, LUNA])
+
+LUNA_UNAVAILABLE = SimpleNamespace(
+    returncode=1,
+    stdout=unavailable(400, f"The '{LUNA}' model is not supported when using Codex with a ChatGPT account.") + "\n",
+    stderr="",
+)
+selected, _, error, calls, remaining = run([UNAVAILABLE, UNAVAILABLE, LUNA_UNAVAILABLE])
+check("a plan without Luna either does not launch", selected, None)
+check("...and says neither model is available", "neither" in str(error) and LUNA in str(error), True)
+check("...as a failure every authoring round would repeat", getattr(error, "scope", None), "machine")
+check("...naming the way out", "TAUCETI_AUTHORING_CODEX_MODEL" in str(error), True)
+selected, _, error, calls, _ = run([UNAVAILABLE, UNAVAILABLE, ORDINARY])
+check("an unconfirmed Luna probe failure does not downgrade or launch", (selected, error is not None), (None, True))
 
 selected, _, error, calls, _ = run([UNAVAILABLE, OK])
 check("a successful confirmation keeps Sol", (selected.model, len(calls), error), (SOL, 2, None))

@@ -299,8 +299,10 @@ def resolve_codex_model_access(cfg: Config, profile: AuthoringProfile) -> Author
         and cached.get("fallback_model") == fallback
         and age_ok
         and isinstance(cached.get("available"), bool)
+        and (cached["available"] or isinstance(cached.get("fallback_available"), bool))
     ):
         available = cached["available"]
+        fallback_available = cached.get("fallback_available", True)
     else:
         first = _codex_model_probe(cfg, profile.model)
         if first.returncode == 0:
@@ -317,6 +319,18 @@ def resolve_codex_model_access(cfg: Config, profile: AuthoringProfile) -> Author
                 raise _codex_probe_failure(profile.model, second)
         else:
             raise _codex_probe_failure(profile.model, first)
+        # A plan without the primary need not have the fallback either. Probing it here costs one
+        # more trivial request; launching the agent on it costs a checkout, a round, and a failure
+        # charged to whatever the round was working on.
+        fallback_available = True
+        if not available:
+            third = _codex_model_probe(cfg, fallback)
+            if third.returncode == 0:
+                fallback_available = True
+            elif _codex_model_unavailable(third.returncode, third.stdout or ""):
+                fallback_available = False
+            else:
+                raise _codex_probe_failure(fallback, third)
 
         if fp is not None:
             cfg.quota_cache.mkdir(parents=True, exist_ok=True)
@@ -328,11 +342,19 @@ def resolve_codex_model_access(cfg: Config, profile: AuthoringProfile) -> Author
                     "primary_model": profile.model,
                     "fallback_model": fallback,
                     "available": available,
+                    "fallback_available": fallback_available,
                 },
             )
 
     if available:
         return replace(profile, fallback_model=None)
+    if not fallback_available:
+        raise NoProgress(
+            f"codex: neither {profile.model} nor {fallback} is available to this Codex account, so it "
+            f"cannot author. Set TAUCETI_AUTHORING_CODEX_MODEL (or --author-model) to a model the "
+            f"account serves, or author with --agent claude",
+            scope="machine",
+        )
     log(f"codex: {profile.model} is unavailable to this subscription; using {fallback}")
     return replace(profile, model=fallback, model_source="subscription fallback", fallback_model=None)
 

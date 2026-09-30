@@ -54,7 +54,8 @@ tauceti work --loop --only review  # a focused worker: keep reviewing (or fix / 
 tauceti work --loop                # fully automatic: keep picking the most useful job
 ```
 
-Ctrl-C stops the current round and exits. From a clone you can run `./tauceti`
+Ctrl-C lets the current round finish, then exits; a second Ctrl-C stops the
+round at once. From a clone you can run `./tauceti`
 instead, a small PEP 723 `uv` shim that runs the same package; every command
 below works either way, and this README writes the installed form.
 
@@ -118,12 +119,17 @@ A review that errors without posting a verdict is charged to its PR; three such
 charges retire the PR from review and open a "Review stuck" issue for it. A
 failure that two unrelated PRs share in a row is not theirs but this host's (the
 engine cannot start, a reviewer binary is missing, a credential is rejected), so
-the first PR's charge is refunded, the second is never charged, and the loop stops
-with the reason and exit status 78 instead of charging the rest of the queue. An
-outage shared the same way (GitHub or the provider) backs off and retries instead.
-The loop also stops when the same error ends three rounds in a row. The review
-engine is pinned to a tested revision, and `tauceti doctor` runs it the way a
-round would, so a host it cannot run on is found before any PR is charged.
+the first PR's charge is refunded and the second is never charged. An outage
+shared the same way (GitHub or the provider) backs off and retries.
+
+A kind of work that keeps failing is dropped from the loop rather than retried
+at the next PR: when a round reports a failure every round of that kind would
+repeat (an authoring model the account lacks, an engine that cannot start), or
+the same error ends three of its rounds in a row, the loop says so in red and
+carries on with the other kinds. It stops, with exit status 78, only when nothing
+is left to run. The review engine is pinned to a tested revision, and `tauceti
+doctor` runs it the way a round would, so a host it cannot run on is found before
+any PR is charged.
 
 A review has two outputs with different roles. The head-pinned scoreboard posted
 on the PR is the live verdict that auto-merge reads. Detailed run records are also
