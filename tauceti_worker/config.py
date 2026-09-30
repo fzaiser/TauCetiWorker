@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import console
 from .constants import MAX_OPEN_PRS, ROADMAP, ROADMAP_DIR, TAUCETI
 from .paths import HERE, RUNTIME_ROOT
 
@@ -344,13 +345,16 @@ def rotate_console_log():
             pass  # Keep the current console usable; retry at the next ordinary loop tick.
 
 
-def log(msg: str) -> None:
+def log(msg: str, *, level: str = "info") -> None:
     global _LOG_FH
 
     rotate_console_log()
     line = f"{time.strftime('%F %T')} tauceti: {msg}"
     try:
-        print(line, file=sys.stderr, flush=True)
+        if console.human():
+            console.emit(msg, level)
+        else:
+            print(line, file=sys.stderr, flush=True)
     except (OSError, ValueError):
         pass
     with _LOG_LOCK:
@@ -367,12 +371,17 @@ def log(msg: str) -> None:
                 pass
 
 
+def debug(msg: str) -> None:
+    """Detail worth keeping on disk but not worth a person's attention: paths, per-PR skips, tails."""
+    log(msg, level="debug")
+
+
 _RED, _RESET = "\033[1;31m", "\033[0m"
 
 
 def warn_red(msg: str) -> None:
     """A bright-red, attention-demanding log line (a PR the automation can't make progress on)."""
-    log(f"{_RED}⚠ {msg}{_RESET}")
+    log(f"{_RED}⚠ {msg}{_RESET}", level="error")
 
 
 class Die(Exception):
