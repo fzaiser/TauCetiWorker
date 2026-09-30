@@ -134,6 +134,7 @@ RUN_STDLIB=(
   resources.py
   retention.py
   rubric_bundle.py
+  runtime_root.py
   safe_exists.py
   scoreboard_trust.py
   security_audit.py
