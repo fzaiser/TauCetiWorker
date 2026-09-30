@@ -36,7 +36,7 @@ from .constants import (
     TAUCETI,
 )
 from .github import me
-from .paths import HERE
+from .paths import HERE, RUNTIME_ROOT
 from .quota import (
     Quota,
     _claude_keychain_creds_interactive,
@@ -1653,10 +1653,10 @@ def _worker_iso_home(wid: str, _base: Path | None = None) -> Path:
     would strand them. The per-worker component stays bounded and deterministic for the same reason it
     always was — a long --worker-id or login name must still produce a stable, recomputable path.
 
-    Linux keeps the in-tree location beside the worker's other state. Either way the path must be a pure
-    function of wid (no $HOME), so a loop child recomputes the same one its parent isolated to."""
+    Linux keeps it beside the worker's other state. Either way the path must be a pure function of wid
+    (no $HOME), so a loop child recomputes the same one its parent isolated to."""
     if sys.platform != "darwin":
-        return HERE / "state" / wid / "home"
+        return RUNTIME_ROOT / "state" / wid / "home"
     base = _base
     if base is None:
         try:

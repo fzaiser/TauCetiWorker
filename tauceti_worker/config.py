@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .constants import ROADMAP
-from .paths import HERE
+from .paths import HERE, RUNTIME_ROOT
 
 _SCP_GIT_URL_RE = re.compile(r"^[^/@\s]+@[^:\s]+:.+$")
 
@@ -92,6 +92,27 @@ def sanitize_wid(raw: str) -> str:
     return re.sub(r"[^a-z0-9-]", "-", s)
 
 
+def migrate_runtime_dirs(old_root: Path = HERE, new_root: Path = RUNTIME_ROOT) -> None:
+    """Move state/, logs/ and checkouts/ from beside the code to the runtime root, once.
+
+    They used to live beside the installed package, where a reinstall or `uv tool upgrade` deleted
+    every worker's counters, review-failure records and leases. A rename is all this does: on a
+    failure (another filesystem, a permission) the old directory stays where it is and is named, so
+    nothing is lost even though the worker then starts from an empty root."""
+    if new_root == old_root:
+        return
+    for name in ("state", "logs", "checkouts"):
+        old, new = old_root / name, new_root / name
+        if not old.is_dir() or new.exists():
+            continue
+        try:
+            new.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(old, new)
+            log(f"moved {old} to {new}")
+        except OSError as e:
+            log(f"could not move {old} to {new} ({e}); leaving it in place and starting from {new}")
+
+
 # Slots held by the current process for its whole life. The fds must NOT be closed (closing releases the
 # flock and frees the slot); keeping the ints here also documents the intentional hold and prevents any
 # tooling from flagging them as leaks.
@@ -103,7 +124,8 @@ def acquire_slot(wid: str) -> bool:
     process already holds it. The lock auto-releases on exit/crash (the kernel drops the flock), so a
     restart reclaims the slot — reusing its seeded $HOME and recognising its own leases. Mirrors
     RoundContext's flock-NB pattern, one level up (per process, not per round)."""
-    state = HERE / "state" / wid
+    migrate_runtime_dirs()
+    state = RUNTIME_ROOT / "state" / wid
     state.mkdir(parents=True, exist_ok=True)
     fd = os.open(state / "instance.lock", os.O_CREAT | os.O_WRONLY, 0o644)
     os.set_inheritable(fd, False)  # spawned rounds take their own round.lock; don't inherit this one
@@ -133,11 +155,11 @@ class Config:
     wid: str
     home: Path  # the LOGIN home: where per-user credential stores live (macOS Keychain, gh, git)
     data_home: Path  # the worker's own data root: per-worker, and independent of where $HOME points
-    state: Path  # HERE/state/<wid>
+    state: Path  # RUNTIME_ROOT/state/<wid>
     checkout: Path  # host authoring checkout
     store_dir: Path  # tauceti-review persistent store
     sbcache: Path  # scoreboard meta cache dir
-    logdir: Path  # HERE/logs/<wid>
+    logdir: Path  # RUNTIME_ROOT/logs/<wid>
     quota_cache: Path  # raw provider usage responses
 
     @property
@@ -147,6 +169,9 @@ class Config:
     @staticmethod
     def resolve(worker_id: str | None = None, home: Path | None = None) -> Config:
         wid = sanitize_wid(worker_id or os.environ.get("TAUCETI_WORKER_ID", "default") or "default")
+        if wid == "workers":
+            raise Die("'workers' is the worker manager's own state directory; pick another --worker-id")
+        migrate_runtime_dirs()
         # Export the resolved id so claim.sh (acquire / heartbeat-renew / git-safe-push's lease check)
         # all share ONE stable owner identity. Without this it falls back to `hostname-$$`, a different
         # owner per claim.sh invocation, so in host mode a worker can't renew or recognise its own
@@ -172,7 +197,7 @@ class Config:
         # data path is therefore the same one it had when isolation moved $HOME, on both platforms,
         # so nothing migrates.
         dh = Path(os.environ.get("TAUCETI_DATA_HOME") or h)
-        state = HERE / "state" / wid
+        state = RUNTIME_ROOT / "state" / wid
         # Per-worker, per-repository claim scratch. claim.sh defaults this under $HOME, which was
         # per-worker only while $HOME moved; use the worker data root while letting a dynamic
         # CLAIM_REPO select its own child store. An explicit CLAIM_GITDIR still overrides the base.
@@ -182,10 +207,10 @@ class Config:
             home=h,
             data_home=dh,
             state=state,
-            checkout=HERE / "checkouts" / wid / "TauCeti",
+            checkout=RUNTIME_ROOT / "checkouts" / wid / "TauCeti",
             store_dir=dh / ".cache" / "tauceti-review" / wid / "store" / "TauCetiProject__TauCeti",
             sbcache=state / "cache" / "scoreboard",
-            logdir=HERE / "logs" / wid,
+            logdir=RUNTIME_ROOT / "logs" / wid,
             quota_cache=state / "cache",
         )
 

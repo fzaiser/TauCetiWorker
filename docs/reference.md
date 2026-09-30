@@ -160,6 +160,18 @@ CODEX_HOME=~/.codex-tauceti codex login
 CODEX_HOME=~/.codex-tauceti tauceti work --agent codex --account you@example.com
 ```
 
+## Runtime directories
+
+A worker keeps its counters, leases and review-failure records in `state/<id>`, its host
+authoring checkout in `checkouts/<id>`, and its logs in `logs/<id>`, all under one runtime root.
+From a source checkout that root is the checkout itself (the Docker image mounts these three
+directories there). An installed `tauceti` uses `$TAUCETI_RUNTIME_ROOT`, else
+`$XDG_STATE_HOME/tauceti`, else `~/Library/Application Support/tauceti` on macOS and
+`~/.local/state/tauceti` elsewhere, so a reinstall or `uv tool upgrade` cannot delete them. The
+first run after an upgrade moves directories found beside the package to the root. The review
+store and the claim scratch live under the worker's data home, and the persistent-worker manager
+keeps its own state as described in [the workers guide](workers.md#state-on-disk).
+
 ## Environment variables
 
 Flags win over these. Most are tuning knobs with sane defaults.
@@ -170,6 +182,7 @@ Flags win over these. Most are tuning knobs with sane defaults.
 | `TAUCETI_ACCOUNT` | _(unset)_ | Default for `--account`. |
 | `CODEX_HOME` | `~/.codex` | Codex config/credential source. Point it at a private directory to give TauCeti its own Codex account without disturbing the one your interactive `codex` uses. |
 | `TAUCETI_WORKER_ID` | _(unset)_ | Pin the id; when unset, `work` takes the lowest free `workerN`. |
+| `TAUCETI_RUNTIME_ROOT` | see [runtime directories](#runtime-directories) | Where `state/`, `checkouts/` and `logs/` live. |
 | `TAUCETI_FORK` | auto-created | Point at an existing fork instead of the one the worker creates. |
 | `TAUCETI_ROADMAP_ONLY` | _(unset)_ | The single roadmap area for `--roadmap-only`. Unset = a fresh random area each round (falls back to all areas if the list can't be fetched); `""` = all areas. |
 | `TAUCETI_ROADMAP_SKIP` | _(unset)_ | Comma-separated roadmap areas to exclude, for `--roadmap-skip`. |

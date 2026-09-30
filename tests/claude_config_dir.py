@@ -37,7 +37,7 @@ check("env var wins", tc.claude_dir(home), Path("/custom/work-claude"))
 # both the pacer (claude_dir) and the spawned claude read the isolated creds.
 tmp = Path(tempfile.mkdtemp())
 wid = f"claude-config-dir-test-{os.getpid()}"
-shutil.rmtree(tc.HERE / "state" / wid, ignore_errors=True)  # a prior interrupted run mustn't taint us
+shutil.rmtree(tc.RUNTIME_ROOT / "state" / wid, ignore_errors=True)  # a prior interrupted run mustn't taint us
 try:
     real, cfgdir = tmp / "realhome", tmp / "work-claude"
     cfgdir.mkdir(parents=True)
@@ -60,7 +60,7 @@ try:
     check("isolated creds are the operator's", creds["claudeAiOauth"]["accessToken"], "T")
     check("isolation records the source", (iso_claude / ".tauceti-creds-source").read_text().strip(), str(cfgdir))
 finally:
-    shutil.rmtree(tc.HERE / "state" / wid, ignore_errors=True)
+    shutil.rmtree(tc.RUNTIME_ROOT / "state" / wid, ignore_errors=True)
     shutil.rmtree(tmp, ignore_errors=True)
 
 # The env handed to the bubble subprocess must carry $CLAUDE_CONFIG_DIR (that's how bubble, which now
