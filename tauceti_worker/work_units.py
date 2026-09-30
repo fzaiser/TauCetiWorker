@@ -10,7 +10,6 @@ import random
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -64,6 +63,7 @@ from .constants import (
     REVIEW_AFFINITY_GRACE_S,
     REVIEW_DAILY_CAP,
     REVIEW_PROVIDER_DOWN_EXIT,
+    REVIEW_REF,
     ROADMAP,
     SANDBOX_DEFAULT,
     TAUCETI,
@@ -73,15 +73,20 @@ from .intentions import administrative_hold_avoid_list, claimed_avoid_list
 from .paths import CLAIM_SH, HERE
 from .quota import Quota, _unavail_reason, mirror_creds
 from .review_diagnostics import (
+    classify_failure,
     clear_review_failure,
+    drop_last_review_attempt,
+    failure_key,
+    failure_summary,
     public_review_failure,
     read_review_failure,
     record_review_failure,
     recover_review_failures,
 )
+from .review_engine import engine_argv
 from .review_state import ReviewState
 from .round import Claims, RoundContext
-from .runtime_status import report_failure, report_runtime, runtime_snapshot
+from .runtime_status import atomic_json, read_json, report_failure, report_runtime, runtime_snapshot
 from .survey import (
     TARGET_MARKER_RE,
     Candidate,
@@ -849,11 +854,8 @@ def do_review(w: Worker, sv: Survey, c: Candidate, opts: RoundOpts, bubble: bool
             cm = _codex_review_model_override(reviewers)  # operator override; else the engine default
             km = _kiro_review_model(reviewers)
             rc = run_to_logfile(
-                [
-                    "uvx",
-                    "--from",
-                    f"git+https://github.com/{REVIEW}",
-                    "tauceti-review",
+                engine_argv(
+                    w.cfg.state,
                     str(pr),
                     "--store",
                     str(w.cfg.store_dir),
@@ -869,7 +871,7 @@ def do_review(w: Worker, sv: Survey, c: Candidate, opts: RoundOpts, bubble: bool
                     me(),
                     *(["--codex-model", cm] if cm else []),
                     *(["--kiro-model", km] if km else []),
-                ],
+                ),
                 logf,
                 f"review #{pr}",
             )
@@ -882,6 +884,7 @@ def do_review(w: Worker, sv: Survey, c: Candidate, opts: RoundOpts, bubble: bool
             # in fact posted, contradicting the "errored Nx without posting a verdict" message.
             w.counters.write(errkey, 0)
             clear_review_failure(w.cfg.state, pr)
+            _last_review_failure_path(w).unlink(missing_ok=True)  # a posted review ends any streak
             # The engine archived this round's records to <store>/outbox but did NOT push (--no-sync).
             # Publish them to TauCetiData with the host's creds. The posted scoreboard is the live
             # auto-merge verdict; TauCetiData is the analytics/provenance archive, so a sync failure is
@@ -925,24 +928,94 @@ def do_review(w: Worker, sv: Survey, c: Candidate, opts: RoundOpts, bubble: bool
         else:
             if not runtime_snapshot().get("failure_reason"):
                 report_failure(f"review #{pr} exited with status {rc}", code=rc)
-            w.counters.incr(errkey)
-            failure = runtime_snapshot()
-            record_review_failure(
-                w.cfg.state,
-                worker=w.cfg.wid,
-                pr=pr,
-                head=head,
-                provider=reviewers,
-                code=rc,
-                reason=str(failure.get("failure_reason") or ""),
-                log_file=None if bubble else logf,
-            )
+            _charge_review_failure(w, pr, head, reviewers, rc, None if bubble else logf)
         return rc
     finally:
         # Drop the claim: on success the watermark now prevents a re-fire; on failure releasing it lets
         # the contest be retried. A crash before here leaves the 👀 to TTL out (CONTEST_CLAIM_TTL).
         if c.contest and c.contest_reply_id and not w.gh.remove_reaction(c.contest_reply_id):
             log(f"  review #{pr}: contest claim (👀) failed to release — it will TTL out in {CONTEST_CLAIM_TTL // 60}m")
+
+
+def _last_review_failure_path(w: Worker) -> Path:
+    return w.cfg.state / "review-last-failure.json"
+
+
+# Failure categories two unrelated PRs can share only because of this host: the engine itself
+# crashing, a reviewer binary missing, or its credential rejected. Those need an operator, so the
+# loop stops. An outage (network, GitHub, the provider) or an undiagnosed exit clears on its own, so
+# the loop backs off and retries as it does for a provider-down abort. Everything else — a stale
+# head, a prompt too large for the OS — is the PR's own, and stays charged.
+_HOST_FAILURE_CATEGORIES = frozenset({"review-engine", "missing-tool", "reviewer-auth"})
+_OUTAGE_FAILURE_CATEGORIES = frozenset({"checkout-or-network", "provider-unavailable", "review-command"})
+
+
+def _charge_review_failure(w: Worker, pr: int, head: str, reviewers: str, rc: int, logf: Path | None) -> None:
+    """Charge a failed review round to its PR — unless the previous failed review, on a different PR,
+    died the same way, in which case the failure is this host's and neither PR pays for it.
+
+    The review-error budget exists to stop re-running the engine on a PR it cannot review; three
+    charges retire the PR and open a public "Review stuck" issue. A failure that two unrelated PRs
+    share in a row is not about either of them (an engine that cannot start, a binary gone from PATH,
+    a credential rejected), and charging it round by round retires every PR in the queue for a fault
+    on the operator's machine. The first occurrence cannot be told apart from a genuine PR failure, so
+    it is charged and remembered; the second refunds it. Whether the loop then stops or keeps backing
+    off depends on the failure's category."""
+    errkey = f"review-err-{pr}"
+    reason = str(runtime_snapshot().get("failure_reason") or "")
+    summary = failure_summary(logf, reason) or f"review command exited with status {rc}"
+    category = classify_failure(summary)
+    key = failure_key(summary)
+    last_path = _last_review_failure_path(w)
+    previous = read_json(last_path)
+    shared = (
+        previous.get("key") == key
+        and isinstance(previous.get("pr"), int)
+        and previous["pr"] != pr
+        and category in (_HOST_FAILURE_CATEGORIES | _OUTAGE_FAILURE_CATEGORIES)
+    )
+    if not shared:
+        w.counters.incr(errkey)
+        record_review_failure(
+            w.cfg.state,
+            worker=w.cfg.wid,
+            pr=pr,
+            head=head,
+            provider=reviewers,
+            code=rc,
+            reason=reason,
+            log_file=logf,
+        )
+        atomic_json(
+            last_path,
+            {"pr": pr, "key": key, "summary": summary, "category": category, "charged": True, "at": time.time()},
+        )
+        return
+    prev_pr = previous["pr"]
+    if previous.get("charged"):
+        prev_key = f"review-err-{prev_pr}"
+        w.counters.write(prev_key, max(0, w.counters.read(prev_key) - 1))
+        drop_last_review_attempt(w.cfg.state, prev_pr)
+    atomic_json(
+        last_path,
+        {"pr": pr, "key": key, "summary": summary, "category": category, "charged": False, "at": time.time()},
+    )
+    host = category in _HOST_FAILURE_CATEGORIES
+    warn_red(
+        f"review #{pr} failed the same way as the previous review on #{prev_pr}: {summary}. A failure "
+        f"two unrelated PRs share is this host's, not theirs, so #{prev_pr}'s charge is refunded and "
+        f"#{pr} is not charged (no stuck issue will be opened for it). "
+        + (
+            "Every review on this host would fail the same way, so the loop stops until it is fixed; "
+            "`tauceti doctor` checks the review engine."
+            if host
+            else "This looks like an outage, so the loop backs off and retries on its own."
+        )
+    )
+    raise NoProgress(
+        f"review #{pr}: {summary} — the same failure as on #{prev_pr}, so it is this host's; not charged",
+        scope="machine" if host else "transient",
+    )
 
 
 def _sync_review_outbox(w: Worker, pr: int) -> int:
@@ -966,27 +1039,7 @@ def _sync_review_outbox(w: Worker, pr: int) -> int:
             f"auto-merge; analytics/provenance records kept in {outbox}"
         )
         return 0
-    eng = os.environ.get("TAUCETI_REVIEW_ENGINE_DIR")  # a local engine checkout, for pre-merge tests
-    if eng:
-        argv = [
-            sys.executable,
-            str(Path(eng) / "runner" / "cli.py"),
-            str(pr),
-            "--sync-only",
-            "--store",
-            str(w.cfg.store_dir),
-        ]
-    else:
-        argv = [
-            "uvx",
-            "--from",
-            f"git+https://github.com/{REVIEW}",
-            "tauceti-review",
-            str(pr),
-            "--sync-only",
-            "--store",
-            str(w.cfg.store_dir),
-        ]
+    argv = engine_argv(w.cfg.state, str(pr), "--sync-only", "--store", str(w.cfg.store_dir))
     # The sync echoes a full `$ …python …/archive.py sync --store … --data-dir …` command line and a
     # "synced N file(s)" line. Capture it so that noise stays out of the main log, surfacing only a
     # one-line summary; keep the detail in a subsidiary file only when the sync FAILS (the diagnosable case).
@@ -1502,8 +1555,8 @@ def do_roadmap(w, sv, c, opts, bubble) -> int:
     refs = w.cfg.state / "refs"
     if not fetch_ref(ROADMAP, refs / "roadmap"):
         raise Die(f"fetch {ROADMAP} failed")
-    if not fetch_ref(REVIEW, refs / "review"):
-        raise Die(f"fetch {REVIEW} failed")
+    if not fetch_ref(REVIEW, refs / "review", REVIEW_REF):
+        raise Die(f"fetch {REVIEW}@{REVIEW_REF[:12]} failed")
     bundle = stage_rubrics(refs / "review", refs / "rubrics")
     os.environ["TAUCETI_REQUIRE_TARGET_MARKER"] = "1"
     # Author from the contributor's OWN fork: push the new branch there and open the PR from it, so the

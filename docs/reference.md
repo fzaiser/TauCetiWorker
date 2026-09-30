@@ -204,7 +204,10 @@ Flags win over these. Most are tuning knobs with sane defaults.
 | `PI_RUN` | `~/.claude/skills/pi/scripts/run.sh` | The `pi` runner for OpenRouter agents on the host. |
 | `TAUCETI_BUBBLE` | `bubble` (else `uvx` for dry-run probes only) | Override the Bubble executable. |
 | `TAUCETI_BUBBLE_HOME` | per-worker cache dir | Override the private bubble home. |
-| `TAUCETI_REVIEW_ENGINE_DIR` | — | Use a local `tauceti-review` checkout instead of fetching the engine. |
+| `TAUCETI_REVIEW_ENGINE_DIR` | — | Use a local `tauceti-review` checkout instead of the pinned engine (host reviews, outbox sync, and bubble alike); it runs on the worker's own interpreter and is not self-checked. |
+| `TAUCETI_REVIEW_REF` | a pinned commit | The `TauCetiReview` revision reviews run. Bump it after `tauceti doctor` passes on every platform your fleet runs. |
+| `TAUCETI_REVIEW_PYTHON` | `>=3.13` on macOS, else unset | The interpreter constraint `uvx` runs the engine under (its git helper needs `os.waitid`, which CPython on macOS provides only from 3.13). |
+| `TAUCETI_LOOP_REPEAT_FAILURE_LIMIT` | `3` | The loop stops (exit status 78) when the same error ends this many rounds in a row, or at once when a round reports a failure every round on this host would repeat. |
 | `TAUCETI_POLL` | `300` | Seconds between quota checks while the loop waits. |
 | `TAUCETI_ROUND_TIMEOUT` | `5400` | Hard cap per round (seconds). |
 | `TAUCETI_INTERROUND` | `20` | Minimum gap after a productive round (seconds). |

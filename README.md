@@ -114,6 +114,17 @@ Merging green PRs, closing stuck ones, and de-duplicating are the repo's CI, not
 the worker. A GitHub API failure aborts the round rather than reading as "nothing
 to do", so a transient outage never falls through to authoring.
 
+A review that errors without posting a verdict is charged to its PR; three such
+charges retire the PR from review and open a "Review stuck" issue for it. A
+failure that two unrelated PRs share in a row is not theirs but this host's (the
+engine cannot start, a reviewer binary is missing, a credential is rejected), so
+the first PR's charge is refunded, the second is never charged, and the loop stops
+with the reason and exit status 78 instead of charging the rest of the queue. An
+outage shared the same way (GitHub or the provider) backs off and retries instead.
+The loop also stops when the same error ends three rounds in a row. The review
+engine is pinned to a tested revision, and `tauceti doctor` runs it the way a
+round would, so a host it cannot run on is found before any PR is charged.
+
 A review has two outputs with different roles. The head-pinned scoreboard posted
 on the PR is the live verdict that auto-merge reads. Detailed run records are also
 kept in a local outbox for the public TauCetiData analytics/provenance archive;

@@ -31,6 +31,7 @@ from .constants import (
     PI_RUN,
     REVIEW,
     REVIEW_DAILY_CAP,
+    REVIEW_REF,
     ROADMAP,
     TAUCETI,
 )
@@ -563,29 +564,29 @@ def prepare_checkout(cfg: Config) -> bool:
     return True
 
 
-def _fetch_shallow(url: str, dir: Path) -> bool:
-    """Clone or refresh a worker-owned shallow checkout and make its origin fetch-only."""
-    if (dir / ".git").is_dir():
-        ok = (
-            subprocess.run(["git", "-C", str(dir), "fetch", "-q", "--depth", "1", "origin", "HEAD"]).returncode == 0
-            and subprocess.run(["git", "-C", str(dir), "reset", "-q", "--hard", "FETCH_HEAD"]).returncode == 0
-        )
-        clean = subprocess.run(["git", "-C", str(dir), "clean", "-fdxq"]).returncode == 0
-        no_push = subprocess.run(["git", "-C", str(dir), "config", "remote.origin.pushurl", "no_push"]).returncode == 0
-        return ok and clean and no_push
-    import shutil
+def _fetch_shallow(url: str, dir: Path, ref: str = "HEAD") -> bool:
+    """Clone or refresh a worker-owned shallow checkout at `ref` (the default branch's tip unless a
+    commit is named) and make its origin fetch-only."""
+    if not (dir / ".git").is_dir():
+        import shutil
 
-    shutil.rmtree(dir, ignore_errors=True)
-    dir.parent.mkdir(parents=True, exist_ok=True)
-    cloned = subprocess.run(["git", "clone", "-q", "--depth", "1", "--", url, str(dir)]).returncode == 0
-    return (
-        cloned and subprocess.run(["git", "-C", str(dir), "config", "remote.origin.pushurl", "no_push"]).returncode == 0
+        shutil.rmtree(dir, ignore_errors=True)
+        dir.parent.mkdir(parents=True, exist_ok=True)
+        if subprocess.run(["git", "clone", "-q", "--depth", "1", "--", url, str(dir)]).returncode != 0:
+            return False
+    ok = (
+        subprocess.run(["git", "-C", str(dir), "fetch", "-q", "--depth", "1", "origin", ref]).returncode == 0
+        and subprocess.run(["git", "-C", str(dir), "reset", "-q", "--hard", "FETCH_HEAD"]).returncode == 0
     )
+    clean = subprocess.run(["git", "-C", str(dir), "clean", "-fdxq"]).returncode == 0
+    no_push = subprocess.run(["git", "-C", str(dir), "config", "remote.origin.pushurl", "no_push"]).returncode == 0
+    return ok and clean and no_push
 
 
-def fetch_ref(repo: str, dir: Path) -> bool:
-    """Worker-owned throwaway shallow mirror of repo's default branch (reset hard, clean)."""
-    return _fetch_shallow(f"https://github.com/{repo}", dir)
+def fetch_ref(repo: str, dir: Path, ref: str = "HEAD") -> bool:
+    """Worker-owned throwaway shallow mirror of repo at `ref` — its default branch unless a commit is
+    named (reset hard, clean)."""
+    return _fetch_shallow(f"https://github.com/{repo}", dir, ref)
 
 
 def fetch_git_source(url: str, dir: Path) -> bool:
@@ -1591,8 +1592,8 @@ def review_in_bubble(w: Worker, pr: int, head: str, reviewers: str, opts: RoundO
     cfg = w.cfg
     eng = os.environ.get("TAUCETI_REVIEW_ENGINE_DIR")
     engine_dir = Path(eng) if eng else (cfg.state / "refs" / "review-engine")
-    if not eng and not fetch_ref(REVIEW, engine_dir):  # keeps .git (no cross-repo rev fallback)
-        raise Die(f"fetch {REVIEW} failed")
+    if not eng and not fetch_ref(REVIEW, engine_dir, REVIEW_REF):  # keeps .git (no cross-repo rev fallback)
+        raise Die(f"fetch {REVIEW}@{REVIEW_REF[:12]} failed")
     roadmap_dir = cfg.state / "refs" / "roadmap"
     if not fetch_ref(ROADMAP, roadmap_dir):
         raise Die(f"fetch {ROADMAP} failed")

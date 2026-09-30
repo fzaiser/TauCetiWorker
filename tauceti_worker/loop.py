@@ -3,18 +3,31 @@ timeout, then settle (short pause if productive, escalating back-off otherwise).
 
 from __future__ import annotations
 
+import os
 import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from .agents import resolve_authoring_profile
-from .config import Config, NoProgress, log
-from .constants import BACKOFF_BASE, BACKOFF_MAX, EX_NOPROGRESS, GH_MIN_BUDGET, INTERROUND, OPENROUTER_MODELS, POLL
+from .config import Config, NoProgress, log, warn_red
+from .constants import (
+    BACKOFF_BASE,
+    BACKOFF_MAX,
+    EX_NOPROGRESS,
+    EX_STUCK,
+    GH_MIN_BUDGET,
+    INTERROUND,
+    LOOP_REPEAT_FAILURE_LIMIT,
+    OPENROUTER_MODELS,
+    POLL,
+)
 from .github import github_budget
 from .quota import Provider, Quota, _glyph, _hours, _pace_reason, _unavail_reason, quota_line
+from .review_diagnostics import failure_key
 from .round import run_round_subprocess
-from .runtime_status import report_runtime, runtime_snapshot
+from .runtime_status import STATUS_ENV, report_runtime, runtime_snapshot
 
 
 class _LoopTerminated(KeyboardInterrupt):
@@ -68,8 +81,17 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
         f"loop start: worker={cfg.wid} only={','.join(only) or '(all)'}{targeted} "
         f"agent={agent}{' [bubble]' if bubble else ''}"
     )
+    # A managed worker's status file comes from the manager. An unmanaged loop gets one of its own,
+    # in its state dir, so its round children can hand back the reason and scope of a failure the
+    # same way; without it every failed round reads as an anonymous "rc=1".
+    state = getattr(cfg, "state", None)
+    if not os.environ.get(STATUS_ENV) and state is not None:
+        os.environ[STATUS_ENV] = str(Path(state) / "runtime-status.json")
     report_runtime("idle", detail="loop started", phase=None, target=None, next_action_at=None)
     streak = 0
+    # Consecutive error rounds (not no-progress, not timeouts) that ended with the same failure.
+    last_error, repeats = None, 0
+    final_detail = "loop stopping"
     previous_sigterm = signal.getsignal(signal.SIGTERM)
 
     def terminate(_signum, _frame) -> None:
@@ -88,6 +110,7 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
                 failure_reason=None,
                 failure_code=None,
                 failure_log=None,
+                failure_scope=None,
             )
             # 1) Decide the model and whether to run this cycle. `pending_init` means Claude was picked
             # while a window of it is reset-but-unopened: the round is authorized to spend ONE small
@@ -225,6 +248,7 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
             # 3) Settle: productive → short pause; no-progress/timeout/error → escalating back-off.
             if rc == 0:
                 streak = 0
+                last_error, repeats = None, 0
                 report_runtime(
                     "idle", detail="round completed", phase=None, target=None, next_action_at=time.time() + INTERROUND
                 )
@@ -240,6 +264,24 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
                     if published
                     else ("round timed out" if rc in (124, 137) else f"round exited with status {rc}")
                 )
+                # Backing off suits a round that found nothing, waited on a provider, or ran out of time:
+                # the next round may well differ. It does not suit a round that says every round on this
+                # host would fail the same way (scope "machine"), nor an error that has now ended several
+                # rounds in a row — each retry re-spends the survey, launches the same failure at the
+                # next PR in the queue, and can charge it there. Stop instead, and say what to fix.
+                if rc not in (EX_NOPROGRESS, 124, 137):
+                    key = failure_key(reason)
+                    repeats = repeats + 1 if key == last_error else 1
+                    last_error = key
+                machine = failed.get("failure_scope") == "machine"
+                if machine or repeats >= LOOP_REPEAT_FAILURE_LIMIT:
+                    why = reason if machine else f"{reason} — the same failure ended the last {repeats} rounds"
+                    warn_red(
+                        f"stopping the loop: {why}. Every further round on this host would fail the same "
+                        f"way. Fix it, then start the loop again (`tauceti doctor` checks the review engine)."
+                    )
+                    final_detail = why
+                    return EX_STUCK
                 log(f"round {tag}; no-progress streak={streak} — backing off {nap}s")
                 report_runtime(
                     "backoff",
@@ -256,7 +298,7 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
         log("loop interrupted — stopping")
         return 130
     finally:
-        report_runtime("stopping", detail="loop stopping", phase=None, target=None, next_action_at=None)
+        report_runtime("stopping", detail=final_detail, phase=None, target=None, next_action_at=None)
         signal.signal(signal.SIGTERM, previous_sigterm)
 
 

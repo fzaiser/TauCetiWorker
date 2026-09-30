@@ -242,8 +242,16 @@ def warn_red(msg: str) -> None:
 
 
 class Die(Exception):
-    """Fatal error → exit 1."""
+    """Fatal error → exit 1. `scope` is passed on to report_failure (None, "transient" or "machine")."""
+
+    def __init__(self, msg: str = "", scope: str | None = None):
+        super().__init__(msg)
+        self.scope = scope
 
 
 class NoProgress(Exception):
-    """Round did no productive work → exit EX_NOPROGRESS (75)."""
+    """Round did no productive work → exit EX_NOPROGRESS (75). `scope` as for Die."""
+
+    def __init__(self, msg: str = "", scope: str | None = None):
+        super().__init__(msg)
+        self.scope = scope

@@ -159,7 +159,7 @@ def test_roadmap():
 
     # A real review checkout, so the round exercises the BUNDLED path rather than the fallback:
     # stage_rubrics only produces a bundle when it finds rubrics to concatenate.
-    def fake_fetch_ref(repo, dest):
+    def fake_fetch_ref(repo, dest, ref="HEAD"):
         if repo == tc.constants.REVIEW:
             (Path(dest) / "rubrics").mkdir(parents=True, exist_ok=True)
             (Path(dest) / "rubrics" / "_common.md").write_text("SHARED PROTOCOL\n")

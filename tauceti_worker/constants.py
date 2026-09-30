@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 
 TAUCETI = "TauCetiProject/TauCeti"
 
@@ -13,6 +14,14 @@ TAUCETI_OWNER = TAUCETI.split("/", 1)[0]  # base-repo owner: a bot PR is first-p
 ROADMAP = "TauCetiProject/TauCetiRoadmap"
 
 REVIEW = "TauCetiProject/TauCetiReview"
+# The engine revision every review runs, pinned by SHA rather than tracking `main`: an engine push
+# otherwise reaches every worker at its next round with no test in between, and a review failure is
+# charged to the PR it happened on. Bump deliberately, after `tauceti doctor` passes on macOS and Linux.
+REVIEW_REF = os.environ.get("TAUCETI_REVIEW_REF", "dcc918abe55f0300e74aabda317d0cc00ecaca10")
+# The interpreter uvx may run the engine on. The engine's git helper needs os.waitid, which CPython
+# provides on macOS only from 3.13; on Linux every supported version has it. Empty leaves the choice
+# to uvx.
+REVIEW_PYTHON = os.environ.get("TAUCETI_REVIEW_PYTHON", ">=3.13" if sys.platform == "darwin" else "")
 
 # The shared cooperative-claim namespace: a repository that holds nothing but `refs/tauceti-claims/*`
 # leases, so operators can coordinate without anyone holding write access to canonical. Push access is
@@ -141,6 +150,13 @@ ROUND_TIMEOUT = int(os.environ.get("TAUCETI_ROUND_TIMEOUT", "5400"))  # 90 min h
 INTERROUND = int(os.environ.get("TAUCETI_INTERROUND", "20"))  # min gap after a PRODUCTIVE round
 
 EX_NOPROGRESS = 75  # round did NO productive work (distinct from error=1 / success=0)
+
+# The loop's exit status when it stops itself because this host cannot do the work until an operator
+# intervenes: a round reported a failure every round would repeat (scope "machine"), or the same
+# failure ended LOOP_REPEAT_FAILURE_LIMIT rounds in a row. Backing off would only re-spend the survey
+# and re-launch the same failure at the next PR.
+EX_STUCK = 78
+LOOP_REPEAT_FAILURE_LIMIT = int(os.environ.get("TAUCETI_LOOP_REPEAT_FAILURE_LIMIT", "3"))
 
 BACKOFF_BASE = int(os.environ.get("TAUCETI_BACKOFF_BASE", "30"))  # first no-progress sleep (doubles each round)
 

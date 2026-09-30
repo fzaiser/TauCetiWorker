@@ -79,11 +79,19 @@ def runtime_snapshot() -> dict:
     return read_json(Path(raw)) if raw else {}
 
 
-def report_failure(reason: str, *, code: int | None = None, log_file: Path | str | None = None) -> None:
-    """Publish a concise, structured failure for the supervising loop and human status views."""
+def report_failure(
+    reason: str, *, code: int | None = None, log_file: Path | str | None = None, scope: str | None = None
+) -> None:
+    """Publish a concise, structured failure for the supervising loop and human status views.
+
+    `scope` says how far the failure reaches, which is what the loop needs to decide whether another
+    round is worth launching: None (the default) means this work unit, "transient" an outage every
+    round would hit but that clears by itself, and "machine" a failure every round on this host would
+    repeat until an operator acts."""
     clean = _RICH_STYLE_RE.sub("", str(reason)).strip()
     report_runtime(
         failure_reason=clean[-1000:] or "unknown failure",
         failure_code=code,
         failure_log=str(log_file) if log_file is not None else None,
+        failure_scope=scope,
     )

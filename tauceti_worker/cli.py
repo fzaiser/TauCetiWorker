@@ -70,6 +70,7 @@ from .github import GitHub, shared_claims_granted
 from .loop import cmd_loop, resolve_work_model
 from .paths import HERE, ensure_ssl_cert_file
 from .quota import Quota, _claude_keychain_creds, _safe_exists, claude_dir, codex_dir, parse_pace_curve
+from .review_engine import engine_selfcheck
 from .review_state import ReviewState
 from .round import Claims, RoundContext, cmd_heartbeat
 from .runtime_status import report_failure
@@ -964,6 +965,12 @@ def cmd_doctor(args) -> int:
     rows.append(("gh", _have("gh"), "required"))
     rows.append(("git", _have("git"), "required"))
     rows.append(("uv/uvx", _have("uvx"), "required (runs tauceti and fetches the review engine)"))
+    # Fetched on demand, so the only way to know it runs here is to run it: a git init through the
+    # engine's own helper, on the interpreter uvx resolves for it. An engine that cannot start on this
+    # platform otherwise surfaces as a review error charged to whichever PR the loop picked.
+    if _have("uvx"):
+        engine_ok, engine_note = engine_selfcheck(cfg.state)
+        rows.append(("review engine", engine_ok, engine_note))
     rows.append(("jq", _have("jq"), "claim.sh needs it"))
     gh_auth = subprocess.run(["gh", "auth", "status"], capture_output=True).returncode == 0
     rows.append(("gh auth", gh_auth, "the worker acts as this account; its PRs are the ones it tends"))
@@ -1019,7 +1026,7 @@ def cmd_doctor(args) -> int:
     print(f"tauceti doctor — worker '{cfg.wid}'")
     for name, ok, note in rows:
         mark = "ok " if ok else "MISSING"
-        if not ok and name in ("gh", "git", "uv/uvx", "gh auth"):
+        if not ok and name in ("gh", "git", "uv/uvx", "gh auth", "review engine"):
             bad += 1
         print(f"  [{mark:7}] {name:14} {note}")
     return 1 if bad else 0
@@ -1040,6 +1047,17 @@ def preflight(cfg: Config, opts: RoundOpts) -> None:
             "preflight: host authoring (the default) needs an elan/lake toolchain on PATH "
             "(or pass --bubble to build inside the sandbox instead)"
         )
+    # A host review runs the fetched engine; make sure it can run at all before surveying, because a
+    # failure at that point is charged to the PR the round picked. Sub-second once the engine is
+    # cached; the first round pays the fetch it would have paid at launch anyway.
+    if want(opts.only, "review") and not _bubble("review", opts) and not opts.dry_run:
+        engine_ok, detail = engine_selfcheck(cfg.state)
+        if not engine_ok:
+            raise Die(
+                f"preflight: the review engine cannot run on this host: {detail}. Every review round "
+                f"would fail the same way, so none is launched; `tauceti doctor` runs the same check",
+                scope="machine",
+            )
     # bubble (the --bubble sandbox) runs each model on untrusted PR content inside an Incus container.
     # Without Incus, bubble fails deep in the round with a terse "Incus is required but not installed";
     # catch it here with a pointer to the two ways out.
@@ -1124,11 +1142,11 @@ def cli_main() -> int:
         return main() or 0
     except Die as e:
         log(str(e))
-        report_failure(str(e), code=1)
+        report_failure(str(e), code=1, scope=e.scope)
         return 1
     except NoProgress as e:
         log(str(e))
-        report_failure(str(e), code=EX_NOPROGRESS)
+        report_failure(str(e), code=EX_NOPROGRESS, scope=e.scope)
         return EX_NOPROGRESS
     except WorkersError as e:
         print(f"tauceti workers: {e}", file=sys.stderr)
