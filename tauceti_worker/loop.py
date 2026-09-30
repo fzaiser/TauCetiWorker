@@ -18,6 +18,7 @@ from .budget import Budget, BudgetError, admission_pause
 from .claude_api import api_mode
 from .config import Config, NoProgress, log, warn_red
 from .constants import (
+    ALLOWED_TASKS,
     BACKOFF_BASE,
     BACKOFF_MAX,
     EX_ADMISSION_WAIT,
@@ -116,17 +117,35 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
     report_runtime("idle", detail="loop started", phase=None, target=None, next_action_at=None)
     streak = 0
     admission_streak = 0
-    # Consecutive error rounds (not no-progress, not timeouts) that ended with the same failure.
-    last_error, repeats = None, 0
+    # Per stage: the failure that ended its last error round (not no-progress, not a timeout) and
+    # how many of its rounds in a row ended that way. Stages that keep failing are dropped from the
+    # cascade for the rest of this loop; the loop stops only when nothing is left to run.
+    failures: dict[str | None, tuple[str, int]] = {}
+    disabled: set[str] = set()
     final_detail = "loop stopping"
+    stop_requested = False
+    in_round = False
     previous_sigterm = signal.getsignal(signal.SIGTERM)
+    previous_sigint = signal.getsignal(signal.SIGINT)
 
     def terminate(_signum, _frame) -> None:
         # run_round_subprocess catches KeyboardInterrupt and tears down the round's process
         # group before re-raising, so use that same proven cleanup path for Compose SIGTERM.
         raise _LoopTerminated
 
+    def interrupt(_signum, _frame) -> None:
+        # A round runs in its own session, so the terminal's Ctrl-C reaches only this driver. One
+        # press lets the round finish (a review posts its verdict, a fix pushes); a second one, or a
+        # press while nothing runs, stops at once — run_round_subprocess tears the round down.
+        nonlocal stop_requested
+        if in_round and not stop_requested:
+            stop_requested = True
+            log("Ctrl-C: finishing the current round, then stopping (press Ctrl-C again to stop it now)", level="warn")
+            return
+        raise KeyboardInterrupt
+
     signal.signal(signal.SIGTERM, terminate)
+    signal.signal(signal.SIGINT, interrupt)
     try:
         while True:
             if api_mode() and os.environ.get("TAUCETI_USE_BUDGET") == "1":
@@ -253,8 +272,9 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
                     tail.append("--budget")
                 if keyfile := os.environ.get("TAUCETI_ANTHROPIC_KEY_FILE"):
                     tail += ["--anthropic-api-key-file", keyfile]
-            if only:
-                tail += ["--only", ",".join(only)]
+            active = [t for t in (only or ALLOWED_TASKS) if t not in disabled]
+            if only or disabled:
+                tail += ["--only", ",".join(active)]
             # --pr must travel to the child for the same reason --account does: the child is what
             # surveys and picks, this argv is built explicitly rather than inherited, and a targeting
             # flag omitted here would turn every round of a `--loop --pr` into a free-running one.
@@ -297,7 +317,11 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
                 tail += ["--source", source]
             report_runtime("surveying", detail="selecting the next work unit", next_action_at=None)
             started = time.time()
-            rc = run_round_subprocess(tail)
+            in_round = True
+            try:
+                rc = run_round_subprocess(tail)
+            finally:
+                in_round = False
             elapsed = time.time() - started
             failed = runtime_snapshot()
             published = failed.get("failure_reason")
@@ -307,6 +331,10 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
                 else ("round timed out" if rc in (124, 137) else f"round exited with status {rc}")
             )
             _round_outcome(rc, failed, reason, elapsed)
+            if stop_requested:
+                log("stopped after the round finished")
+                final_detail = "stopped by Ctrl-C once the round had finished"
+                return 0
 
             if rc == EX_ADMISSION_WAIT:
                 streak = 0
@@ -343,9 +371,10 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
                 continue
 
             # 3) Settle: productive → short pause; no-progress/timeout/error → escalating back-off.
+            phase = failed.get("phase")
             if rc == 0:
                 streak = 0
-                last_error, repeats = None, 0
+                failures.pop(phase, None)
                 report_runtime(
                     "idle", detail="round completed", phase=None, target=None, next_action_at=time.time() + INTERROUND
                 )
@@ -357,21 +386,35 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
                 # Backing off suits a round that found nothing, waited on a provider, or ran out of time:
                 # the next round may well differ. It does not suit a round that says every round on this
                 # host would fail the same way (scope "machine"), nor an error that has now ended several
-                # rounds in a row — each retry re-spends the survey, launches the same failure at the
-                # next PR in the queue, and can charge it there. Stop instead, and say what to fix.
+                # rounds of one stage in a row — each retry re-spends the survey, launches the same
+                # failure at the next PR in the queue, and can charge it there. Drop that stage from the
+                # cascade instead (other work goes on: an authoring model the account lacks says nothing
+                # about reviews), and stop only when nothing is left to run.
                 if rc not in (EX_NOPROGRESS, 124, 137):
                     key = failure_key(reason)
-                    repeats = repeats + 1 if key == last_error else 1
-                    last_error = key
+                    previous_key, count = failures.get(phase, (None, 0))
+                    failures[phase] = (key, count + 1 if key == previous_key else 1)
                 machine = failed.get("failure_scope") == "machine"
-                if machine or repeats >= LOOP_REPEAT_FAILURE_LIMIT:
-                    why = reason if machine else f"{reason} — the same failure ended the last {repeats} rounds"
-                    warn_red(
-                        f"stopping the loop: {why}. Every further round on this host would fail the same "
-                        f"way. Fix it, then start the loop again (`tauceti doctor` checks the review engine)."
-                    )
-                    final_detail = why
-                    return EX_STUCK
+                count = failures.get(phase, (None, 0))[1]
+                if machine or count >= LOOP_REPEAT_FAILURE_LIMIT:
+                    why = reason if machine else f"{reason} — the same failure ended the last {count} {phase} rounds"
+                    remaining = [t for t in (only or ALLOWED_TASKS) if t not in disabled and t != phase]
+                    if phase in ALLOWED_TASKS and remaining:
+                        disabled.add(phase)
+                        failures.pop(phase, None)
+                        warn_red(
+                            f"disabling {phase} for the rest of this loop: {why}. Every further {phase} "
+                            f"round on this host would fail the same way; {', '.join(remaining)} go on. "
+                            f"Fix it, then restart the loop to get {phase} back."
+                        )
+                    else:
+                        warn_red(
+                            f"stopping the loop: {why}. Every further round on this host would fail the "
+                            f"same way. Fix it, then start the loop again (`tauceti doctor` checks the "
+                            f"review engine)."
+                        )
+                        final_detail = why
+                        return EX_STUCK
                 log(
                     f"round {tag}; no-progress streak={streak} — backing off {nap}s, "
                     f"next round at {console.clock(time.time() + nap)}"
@@ -393,6 +436,7 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
     finally:
         report_runtime("stopping", detail=final_detail, phase=None, target=None, next_action_at=None)
         signal.signal(signal.SIGTERM, previous_sigterm)
+        signal.signal(signal.SIGINT, previous_sigint)
 
 
 def _round_outcome(rc: int, snap: dict, reason: str, elapsed: float) -> None:
