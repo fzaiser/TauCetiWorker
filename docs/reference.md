@@ -100,12 +100,15 @@ the hold becomes inactive.
 
 The committed Codex authoring profile defaults to `gpt-6-sol`. Before the real
 authoring task, the worker makes a tiny read-only Sol access probe and caches the
-result for one hour for that worker and ChatGPT account. It selects
-`gpt-6-luna` only after two consecutive structured 400, 403, or 404 rejections
-that identify a model-access problem. Rate limits, server errors, context errors,
-malformed output, and ordinary failures pause the round without downgrading. Both
-probes are read-only, and the real authoring prompt is always executed exactly
-once.
+result for one hour for that worker and ChatGPT account. Only after two
+consecutive structured 400, 403, or 404 rejections that identify a model-access
+problem does it move down the fallback chain, `gpt-6-luna` then `gpt-5.6-sol`,
+probing each the same way and taking the first the account serves. When none is
+served, no authoring round launches: the round says so, names the two ways out,
+and the loop drops authoring for the session. Rate limits, server errors,
+context errors, malformed output, and ordinary failures pause the round without
+downgrading. Every probe is read-only, and the real authoring prompt is always
+executed exactly once.
 
 An explicit `--author-model`, `TAUCETI_AUTHORING_CODEX_MODEL`, or legacy
 `TAUCETI_CODEX_MODEL` is a pin: it bypasses both the probe and the fallback.
@@ -205,7 +208,7 @@ Flags win over these. Most are tuning knobs with sane defaults.
 | `LAKE_RESTORE_ARTIFACTS` | `1` | Copy artifact-store hits into the build directory for TauCeti's post-build audits. |
 | `TAUCETI_CLAUDE_CMD` | `claude` | The `claude` executable for host rounds; split as a shell word list, the usual flags appended. |
 | `TAUCETI_INHERIT_CLAUDE_CONFIG` | _(unset)_ | `1` gives an isolated worker your own `CLAUDE.md`, `settings.json`, and skills instead of its own. Off by default: a round should not depend on whose config dir it ran from, and personal instructions can contradict the task prompt. |
-| `TAUCETI_AUTHORING_CODEX_MODEL` / `TAUCETI_AUTHORING_CODEX_EFFORT` | `gpt-6-sol` (Luna fallback) / `high` | Codex authoring profile. An explicit model disables automatic fallback; unrelated host configuration remains available. |
+| `TAUCETI_AUTHORING_CODEX_MODEL` / `TAUCETI_AUTHORING_CODEX_EFFORT` | `gpt-6-sol` (then Luna, then 5.6 Sol) / `high` | Codex authoring profile. An explicit model disables automatic fallback; unrelated host configuration remains available. |
 | `TAUCETI_AUTHORING_CLAUDE_MODEL` / `TAUCETI_AUTHORING_CLAUDE_EFFORT` | `claude-opus-5-5` / `high` | Claude authoring profile; the default is an exact model rather than the moving `opus` alias. |
 | `TAUCETI_AUTHORING_KIRO_MODEL` / `TAUCETI_AUTHORING_KIRO_EFFORT` | `gpt-5.6-sol` / `high` | Exact Kiro authoring profile. `claude-opus-5` selects Opus; Kiro Auto is never used. |
 | `TAUCETI_REVIEW_CODEX_MODEL` | engine policy | Optional Codex review-model pin, independent of the authoring model. Unset preserves the review engine's own default and fallback. |

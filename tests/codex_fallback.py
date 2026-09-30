@@ -15,6 +15,7 @@ import tauceti_worker as tc
 
 SOL = "gpt-6-sol"
 LUNA = "gpt-6-luna"
+SOL56 = "gpt-5.6-sol"
 fails = 0
 
 
@@ -64,7 +65,7 @@ def run(sequence, *, repeat=False, explicit=False):
             effort="high",
             model_source="--author-model" if explicit else "repository default",
             effort_source="repository default",
-            fallback_model=None if explicit else LUNA,
+            fallback_model=None if explicit else f"{LUNA},{SOL56}",
         )
         calls = []
         outcomes = list(sequence)
@@ -117,9 +118,14 @@ LUNA_UNAVAILABLE = SimpleNamespace(
     stdout=unavailable(400, f"The '{LUNA}' model is not supported when using Codex with a ChatGPT account.") + "\n",
     stderr="",
 )
-selected, _, error, calls, remaining = run([UNAVAILABLE, UNAVAILABLE, LUNA_UNAVAILABLE])
-check("a plan without Luna either does not launch", selected, None)
-check("...and says neither model is available", "neither" in str(error) and LUNA in str(error), True)
+selected, again, error, calls, remaining = run([UNAVAILABLE, UNAVAILABLE, LUNA_UNAVAILABLE, OK], repeat=True)
+check("a plan without Luna falls through to the next model in the chain", (selected.model, error), (SOL56, None))
+check("the chain is probed in order", [c[0][c[0].index("--model") + 1] for c in calls], [SOL, SOL, LUNA, SOL56])
+check("the chain's answer is cached", (again.model, len(calls), len(remaining)), (SOL56, 4, 0))
+
+selected, _, error, calls, remaining = run([UNAVAILABLE, UNAVAILABLE, LUNA_UNAVAILABLE, LUNA_UNAVAILABLE])
+check("a plan with none of them does not launch", selected, None)
+check("...and names every model tried", all(m in str(error) for m in (SOL, LUNA, SOL56)), True)
 check("...as a failure every authoring round would repeat", getattr(error, "scope", None), "machine")
 check("...naming the way out", "TAUCETI_AUTHORING_CODEX_MODEL" in str(error), True)
 selected, _, error, calls, _ = run([UNAVAILABLE, UNAVAILABLE, ORDINARY])

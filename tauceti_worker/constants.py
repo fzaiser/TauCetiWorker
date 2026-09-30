@@ -262,7 +262,9 @@ AGENT_NAMES = {
 # Reproducible authoring defaults. Provider selection remains quota-driven; once
 # selected, host and bubble launchers consume this exact model/effort profile.
 # Review models are configured separately by the review engine.
-CODEX_AUTHORING_FALLBACK_MODEL = "gpt-6-luna"
+# Tried in order when the default Codex model is not served to the account: the smaller GPT-6, then
+# the previous generation's Sol, which a plan without GPT-6 Sol still lists.
+CODEX_AUTHORING_FALLBACK_MODELS = ("gpt-6-luna", "gpt-5.6-sol")
 # A model entitlement normally changes only when an account's subscription changes. Keep the
 # side-effect-free access probe out of every round while still noticing an upgrade promptly.
 CODEX_MODEL_ACCESS_TTL = 3600

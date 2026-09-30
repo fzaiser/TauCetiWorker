@@ -25,7 +25,7 @@ from .config import Config, Die, NoProgress, debug, log
 from .constants import (
     AUTHORING_DEFAULTS,
     CLAUDE_CMD,
-    CODEX_AUTHORING_FALLBACK_MODEL,
+    CODEX_AUTHORING_FALLBACK_MODELS,
     CODEX_MODEL_ACCESS_TTL,
     OPENROUTER_MODELS,
     PI_RUN,
@@ -64,7 +64,13 @@ class AuthoringProfile:
     effort: str | None
     model_source: str
     effort_source: str
+    # The models to try, comma-separated and in order, when `model` is not served to the account;
+    # None for a pinned model. One string so the loop→round handoff carries it unchanged.
     fallback_model: str | None = None
+
+    @property
+    def fallback_chain(self) -> list[str]:
+        return [m.strip() for m in (self.fallback_model or "").split(",") if m.strip()]
 
 
 def _validate_kiro_model_pin(model: str, source: str) -> str:
@@ -148,7 +154,7 @@ def resolve_authoring_profile(
             # Sol model into the child would accidentally turn the default into an explicit override.
             fallback_model = resolved_fallback_model
         elif model_source == "repository default" and model == AUTHORING_DEFAULTS["codex"][0]:
-            fallback_model = CODEX_AUTHORING_FALLBACK_MODEL
+            fallback_model = ",".join(CODEX_AUTHORING_FALLBACK_MODELS)
     return AuthoringProfile(provider, model, effort, model_source, effort_source, fallback_model)
 
 
@@ -274,13 +280,15 @@ def _codex_probe_failure(model: str, result: subprocess.CompletedProcess[str]) -
 
 
 def resolve_codex_model_access(cfg: Config, profile: AuthoringProfile) -> AuthoringProfile:
-    """Resolve a default Sol profile to Sol or Luna before the real task runs.
+    """Resolve a default Sol profile to Sol or the first served model of its fallback chain before the
+    real task runs.
 
     Explicit model pins have no fallback and bypass this probe. A confirmed result is cached per worker
     and account; failures that might be transient are never cached and never cause a downgrade.
     """
     fallback = profile.fallback_model
-    if profile.provider != "codex" or not fallback:
+    chain = profile.fallback_chain
+    if profile.provider != "codex" or not chain:
         return profile
 
     fp = Quota(cfg).codex_account_fingerprint()
@@ -299,10 +307,10 @@ def resolve_codex_model_access(cfg: Config, profile: AuthoringProfile) -> Author
         and cached.get("fallback_model") == fallback
         and age_ok
         and isinstance(cached.get("available"), bool)
-        and (cached["available"] or isinstance(cached.get("fallback_available"), bool))
+        and (cached["available"] or "fallback_selected" in cached)
     ):
         available = cached["available"]
-        fallback_available = cached.get("fallback_available", True)
+        selected = cached.get("fallback_selected")
     else:
         first = _codex_model_probe(cfg, profile.model)
         if first.returncode == 0:
@@ -319,18 +327,18 @@ def resolve_codex_model_access(cfg: Config, profile: AuthoringProfile) -> Author
                 raise _codex_probe_failure(profile.model, second)
         else:
             raise _codex_probe_failure(profile.model, first)
-        # A plan without the primary need not have the fallback either. Probing it here costs one
-        # more trivial request; launching the agent on it costs a checkout, a round, and a failure
-        # charged to whatever the round was working on.
-        fallback_available = True
+        # A plan without the primary need not have a fallback either. Probing each candidate here
+        # costs one trivial request; launching the agent on one the account lacks costs a checkout, a
+        # round, and a failure charged to whatever the round was working on.
+        selected = None
         if not available:
-            third = _codex_model_probe(cfg, fallback)
-            if third.returncode == 0:
-                fallback_available = True
-            elif _codex_model_unavailable(third.returncode, third.stdout or ""):
-                fallback_available = False
-            else:
-                raise _codex_probe_failure(fallback, third)
+            for candidate in chain:
+                probe = _codex_model_probe(cfg, candidate)
+                if probe.returncode == 0:
+                    selected = candidate
+                    break
+                if not _codex_model_unavailable(probe.returncode, probe.stdout or ""):
+                    raise _codex_probe_failure(candidate, probe)
 
         if fp is not None:
             cfg.quota_cache.mkdir(parents=True, exist_ok=True)
@@ -342,21 +350,21 @@ def resolve_codex_model_access(cfg: Config, profile: AuthoringProfile) -> Author
                     "primary_model": profile.model,
                     "fallback_model": fallback,
                     "available": available,
-                    "fallback_available": fallback_available,
+                    "fallback_selected": selected,
                 },
             )
 
     if available:
         return replace(profile, fallback_model=None)
-    if not fallback_available:
+    if not selected:
         raise NoProgress(
-            f"codex: neither {profile.model} nor {fallback} is available to this Codex account, so it "
-            f"cannot author. Set TAUCETI_AUTHORING_CODEX_MODEL (or --author-model) to a model the "
+            f"codex: none of {profile.model}, {', '.join(chain)} is available to this Codex account, so "
+            f"it cannot author. Set TAUCETI_AUTHORING_CODEX_MODEL (or --author-model) to a model the "
             f"account serves, or author with --agent claude",
             scope="machine",
         )
-    log(f"codex: {profile.model} is unavailable to this subscription; using {fallback}")
-    return replace(profile, model=fallback, model_source="subscription fallback", fallback_model=None)
+    log(f"codex: {profile.model} is unavailable to this subscription; using {selected}")
+    return replace(profile, model=selected, model_source="subscription fallback", fallback_model=None)
 
 
 def _kiro_model_ids(payload) -> set[str]:
