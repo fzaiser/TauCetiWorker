@@ -273,13 +273,15 @@ AGENT_NAMES = {
 # Reproducible authoring defaults. Provider selection remains quota-driven; once
 # selected, host and bubble launchers consume this exact model/effort profile.
 # Claude reviews share this default; other review models follow the review engine's policy.
-CODEX_AUTHORING_FALLBACK_MODEL = "gpt-6-luna"
+# Tried in order when the default Codex model is not served to the account: the smaller GPT-6, then
+# the previous generation's Sol, which a plan without GPT-6 Sol still lists.
+CODEX_AUTHORING_FALLBACK_MODELS = ("gpt-6-luna", "gpt-5.6-sol")
 # A model entitlement normally changes only when an account's subscription changes. Keep the
 # side-effect-free access probe out of every round while still noticing an upgrade promptly.
 CODEX_MODEL_ACCESS_TTL = 3600
 AUTHORING_DEFAULTS = {
-    # Prefer flagship Sol for authoring. A cached preflight probe selects Luna only when Codex confirms
-    # that this repository default is unavailable to the current subscription.
+    # Prefer flagship Sol for authoring. A cached preflight probe selects an available fallback
+    # when Codex confirms that this repository default is unavailable to the current subscription.
     "codex": ("gpt-6.1-sol", "high"),
     # Pin Claude authoring, reviews and quota bootstrap to an exact model, not the moving opus alias.
     # The review engine must price a new model first, so update TauCetiReview before this default.
