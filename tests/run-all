@@ -97,6 +97,7 @@ RUN_STDLIB=(
   round_group_sweep.py
   resources.py
   rubric_bundle.py
+  runtime_root.py
   safe_exists.py
   scoreboard_trust.py
   shared_build_caches.py

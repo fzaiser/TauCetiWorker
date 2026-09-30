@@ -85,8 +85,8 @@ def main():
         # --- Linux: unchanged in-tree location (native incus, no $HOME-nested sockets) ---
         tc.agents.sys.platform = "linux"
         check(
-            "linux home is HERE/state/<wid>/home",
-            iso_home("worker1") == tc.agents.HERE / "state" / "worker1" / "home",
+            "linux home is RUNTIME_ROOT/state/<wid>/home",
+            iso_home("worker1") == tc.agents.RUNTIME_ROOT / "state" / "worker1" / "home",
         )
     finally:
         tc.agents.sys.platform = orig

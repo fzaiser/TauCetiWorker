@@ -1,11 +1,14 @@
 """tauceti_worker.paths — install-location detection and self-invocation helpers.
 
 `HERE` is the single source of truth for where the worker's bundled assets (prompts/, scripts/)
-and runtime dirs (state/, checkouts/, logs/) live. It must resolve to the SAME directory the
-old single-file `tauceti` used: the repo root in a source checkout, and the package dir in an
-installed wheel. We detect which by asking whether `prompts/` sits beside the modules — only true
-in the wheel (where pyproject force-includes it into the package); in a checkout prompts/ stays at
-the repo root, one level up.
+live: the repo root in a source checkout, and the package dir in an installed wheel. We detect
+which by asking whether `prompts/` sits beside the modules — only true in the wheel (where
+pyproject force-includes it into the package); in a checkout prompts/ stays at the repo root, one
+level up.
+
+`RUNTIME_ROOT` is where the runtime dirs (state/, checkouts/, logs/) live. A source checkout keeps
+them beside the code, which is what the Docker image mounts; an installed wheel keeps them in the
+user's state directory, where `uv tool upgrade` cannot delete them.
 """
 
 from __future__ import annotations
@@ -17,6 +20,34 @@ from pathlib import Path
 
 _pkg = Path(__file__).resolve().parent  # …/tauceti_worker
 HERE = _pkg if (_pkg / "prompts").is_dir() else _pkg.parent
+
+
+def _login_home() -> Path:
+    """The login user's home via the password database, not $HOME: an isolated worker's $HOME is
+    itself under the runtime root, and every process in a fleet must resolve the same root."""
+    try:
+        import pwd
+
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (ImportError, KeyError, OSError):
+        return Path(os.path.expanduser("~"))
+
+
+def _runtime_root(env: Mapping[str, str], here: Path, pkg: Path, platform: str, home: Path) -> Path:
+    override = env.get("TAUCETI_RUNTIME_ROOT")
+    if override:
+        return Path(override).expanduser()
+    if here != pkg:
+        return here  # a source checkout
+    xdg = env.get("XDG_STATE_HOME")
+    if xdg:
+        return Path(xdg).expanduser() / "tauceti"
+    if platform == "darwin":
+        return home / "Library" / "Application Support" / "tauceti"
+    return home / ".local" / "state" / "tauceti"
+
+
+RUNTIME_ROOT = _runtime_root(os.environ, HERE, _pkg, sys.platform, _login_home())
 
 # The branch-lease helper the agents run on PATH inside a round. Overridable for tests.
 CLAIM_SH = os.environ.get("TAUCETI_CLAIM_SH") or str(HERE / "scripts" / "claim.sh")
@@ -82,6 +113,7 @@ def self_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
     base = dict(os.environ if env is None else env)
     existing = base.get("PYTHONPATH")
     base["PYTHONPATH"] = os.pathsep.join([str(HERE)] + ([existing] if existing else []))
+    base.setdefault("TAUCETI_RUNTIME_ROOT", str(RUNTIME_ROOT))  # one root per fleet, whatever $HOME
     ensure_ssl_cert_file(base)
     return base
 
