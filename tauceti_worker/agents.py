@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -24,9 +25,9 @@ from . import build_caches
 from .config import Config, Die, NoProgress, debug, log
 from .constants import (
     AUTHORING_DEFAULTS,
+    AUTHORING_FALLBACK_MODELS,
     CLAUDE_CMD,
-    CODEX_AUTHORING_FALLBACK_MODELS,
-    CODEX_MODEL_ACCESS_TTL,
+    MODEL_ACCESS_TTL,
     OPENROUTER_MODELS,
     PI_RUN,
     REVIEW,
@@ -38,6 +39,7 @@ from .constants import (
 from .github import me
 from .paths import HERE, RUNTIME_ROOT
 from .quota import (
+    CLAUDE_BOOTSTRAP_DROP_ENV,
     Quota,
     _claude_keychain_creds_interactive,
     _read_json_file,
@@ -147,14 +149,14 @@ def resolve_authoring_profile(
     if effort and not re.fullmatch(r"[A-Za-z0-9._-]+", effort):
         raise Die(f"authoring effort for {provider} contains unsupported characters: {effort!r}")
     fallback_model = None
-    if provider == "codex":
+    if provider in AUTHORING_FALLBACK_MODELS:
         if resolved_fallback_model:
             # Internal loop-child handoff: the parent already resolved whether its model was a default
             # (eligible for fallback) or an operator pin. Without this provenance, pinning the resolved
-            # Sol model into the child would accidentally turn the default into an explicit override.
+            # model into the child would accidentally turn the default into an explicit override.
             fallback_model = resolved_fallback_model
-        elif model_source == "repository default" and model == AUTHORING_DEFAULTS["codex"][0]:
-            fallback_model = ",".join(CODEX_AUTHORING_FALLBACK_MODELS)
+        elif model_source == "repository default" and model == AUTHORING_DEFAULTS[provider][0]:
+            fallback_model = ",".join(AUTHORING_FALLBACK_MODELS[provider])
     return AuthoringProfile(provider, model, effort, model_source, effort_source, fallback_model)
 
 
@@ -162,7 +164,7 @@ def _authoring_profile(value: AuthoringProfile | str) -> AuthoringProfile:
     return value if isinstance(value, AuthoringProfile) else resolve_authoring_profile(value)
 
 
-_CODEX_MODEL_ERROR_STATUSES = {400, 403, 404}
+_MODEL_ERROR_STATUSES = {400, 403, 404}
 _CODEX_MODEL_ERROR_MESSAGE = re.compile(
     r"not supported when using codex"
     r"|does not exist or you do not have access"
@@ -172,7 +174,7 @@ _CODEX_MODEL_ERROR_MESSAGE = re.compile(
     r"|model .*?not entitled|not entitled to (?:this |use )?model",
     re.I,
 )
-_CODEX_MODEL_ACCESS_PROMPT = "Reply with exactly OK. Do not use tools."
+_MODEL_ACCESS_PROMPT = "Reply with exactly OK. Do not use tools."
 
 
 def _codex_error_details(transcript: str) -> tuple[int | None, str | None]:
@@ -220,16 +222,14 @@ def _codex_error_details(transcript: str) -> tuple[int | None, str | None]:
     return None, None
 
 
-def _codex_model_unavailable(returncode: int, transcript: str) -> bool:
+def _codex_model_unavailable(result: subprocess.CompletedProcess[str]) -> str | None:
     """Only a structured client rejection naming model access confirms an entitlement miss."""
-    if returncode == 0:
-        return False
-    status, message = _codex_error_details(transcript)
-    return bool(
-        status in _CODEX_MODEL_ERROR_STATUSES
-        and isinstance(message, str)
-        and _CODEX_MODEL_ERROR_MESSAGE.search(message)
-    )
+    if result.returncode == 0:
+        return None
+    status, message = _codex_error_details(result.stdout or "")
+    if status in _MODEL_ERROR_STATUSES and isinstance(message, str) and _CODEX_MODEL_ERROR_MESSAGE.search(message):
+        return message
+    return None
 
 
 def _codex_model_probe(cfg: Config, model: str) -> subprocess.CompletedProcess[str]:
@@ -250,7 +250,7 @@ def _codex_model_probe(cfg: Config, model: str) -> subprocess.CompletedProcess[s
         "--ephemeral",
         "--ignore-user-config",
         "--ignore-rules",
-        _CODEX_MODEL_ACCESS_PROMPT,
+        _MODEL_ACCESS_PROMPT,
     ]
     try:
         return subprocess.run(
@@ -279,26 +279,188 @@ def _codex_probe_failure(model: str, result: subprocess.CompletedProcess[str]) -
     )
 
 
-def resolve_codex_model_access(cfg: Config, profile: AuthoringProfile) -> AuthoringProfile:
-    """Resolve a default Sol profile to Sol or the first served model of its fallback chain before the
-    real task runs.
+# Claude Code answers a model it cannot serve with an API-style error whose code names the cause. An
+# installed build older than the model is one such cause: the model exists, the account may have it,
+# but this host cannot use it until `claude update`.
+_CLAUDE_MODEL_ERROR_CODES = {"claude_code_version_too_old", "not_found_error", "model_not_found"}
+_CLAUDE_MODEL_ERROR_MESSAGE = re.compile(
+    r"does not support this model|version \S+ or newer is required"
+    r"|(?:unrecognized|unknown|invalid|unsupported) model|model[_ ]not[_ ]found"
+    r"|model .*?(?:not found|is not available|not supported)"
+    r"|(?:no|do not have) access to (?:this |the )?model",
+    re.I,
+)
+
+
+def _claude_result(transcript: str) -> dict | None:
+    """The single result object `claude -p --output-format json` prints, or None."""
+    text = (transcript or "").strip()
+    if not text:
+        return None
+    for chunk in (text, *reversed(text.splitlines())):
+        try:
+            decoded = json.loads(chunk)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(decoded, dict) and decoded.get("type") == "result":
+            return decoded
+    return None
+
+
+def _claude_error_details(transcript: str) -> tuple[int | None, str | None, str | None]:
+    """(HTTP status, error code, message) of a failed `claude -p` turn; all None when it did not fail."""
+    result = _claude_result(transcript)
+    if not result or not result.get("is_error"):
+        return None, None, None
+    message = result.get("result") if isinstance(result.get("result"), str) else None
+    status = result.get("api_error_status")
+    if isinstance(status, bool) or not isinstance(status, int):
+        found = _API_ERROR_RE.search(message or "")
+        status = int(found.group(1)) if found else None
+    code = result.get("api_error_code") if isinstance(result.get("api_error_code"), str) else None
+    return status, code, message
+
+
+def _claude_model_served(result: subprocess.CompletedProcess[str]) -> bool:
+    # `--output-format json` exits 0 for a failed turn too; only the result object says it succeeded.
+    decoded = _claude_result(result.stdout or "")
+    return result.returncode == 0 and decoded is not None and not decoded.get("is_error")
+
+
+def _claude_model_unavailable(result: subprocess.CompletedProcess[str]) -> str | None:
+    status, code, message = _claude_error_details(result.stdout or "")
+    if status in _MODEL_ERROR_STATUSES and (
+        code in _CLAUDE_MODEL_ERROR_CODES or (message and _CLAUDE_MODEL_ERROR_MESSAGE.search(message))
+    ):
+        return message or code
+    return None
+
+
+def _claude_model_probe(cfg: Config, model: str) -> subprocess.CompletedProcess[str]:
+    """One minimal `claude -p` turn under this worker's own config dir.
+
+    It runs in a throwaway directory outside every checkout, so no repository CLAUDE.md, hook, or MCP
+    server joins in, and under the same credential the pacer measures: every alternative route (an API
+    key, a long-lived token, a cloud provider) is dropped from the environment."""
+    env = {k: v for k, v in os.environ.items() if k not in CLAUDE_BOOTSTRAP_DROP_ENV}
+    command = [
+        *(shlex_split(CLAUDE_CMD) or ["claude"]),
+        "-p",
+        _MODEL_ACCESS_PROMPT,
+        "--model",
+        model,
+        "--output-format",
+        "json",
+        "--no-session-persistence",
+    ]
+    cwd = tempfile.mkdtemp(prefix="tauceti-model-probe-")
+    try:
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=120,
+        )
+    except OSError as error:
+        raise NoProgress(f"claude model-access probe could not launch: {error}") from error
+    except subprocess.TimeoutExpired as error:
+        raise NoProgress("claude model-access probe timed out after 120s; not launching authoring") from error
+    finally:
+        shutil.rmtree(cwd, ignore_errors=True)
+
+
+def _claude_probe_failure(model: str, result: subprocess.CompletedProcess[str]) -> NoProgress:
+    status, _code, message = _claude_error_details(result.stdout or "")
+    detail = message or (result.stderr or "").strip()[-1000:] or f"exit {result.returncode}"
+    status_text = f"HTTP {status}: " if status is not None else ""
+    return NoProgress(
+        f"claude model-access probe for {model} failed without confirming that the model is unavailable "
+        f"({status_text}{detail}); not launching authoring"
+    )
+
+
+def _claude_access_fingerprint(cfg: Config) -> str | None:
+    """Cache identity for a Claude answer: which Claude Code build, under which config dir.
+
+    The models a build serves change with the build, so `claude update` alone must invalidate the
+    cached answer."""
+    try:
+        version = subprocess.run(
+            [*(shlex_split(CLAUDE_CMD) or ["claude"]), "--version"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    words = (version.stdout or "").split()
+    if version.returncode != 0 or not words:
+        return None
+    return f"{words[0]}@{claude_dir(cfg.home)}"
+
+
+@dataclass(frozen=True)
+class _ModelAccess:
+    """How one provider's CLI is asked whether it serves a model, and how its answer is read."""
+
+    probe: Callable[[Config, str], subprocess.CompletedProcess[str]]
+    served: Callable[[subprocess.CompletedProcess[str]], bool]
+    # The provider's own reason when it confirms that the model is not served here, else None: an
+    # answer that is neither is a failure to be reported, never a downgrade.
+    unavailable: Callable[[subprocess.CompletedProcess[str]], str | None]
+    failure: Callable[[str, subprocess.CompletedProcess[str]], NoProgress]
+    fingerprint: Callable[[Config], str | None]
+    other_agent: str
+
+
+_MODEL_ACCESS = {
+    "codex": _ModelAccess(
+        _codex_model_probe,
+        lambda result: result.returncode == 0,
+        _codex_model_unavailable,
+        _codex_probe_failure,
+        lambda cfg: Quota(cfg).codex_account_fingerprint(),
+        "claude",
+    ),
+    "claude": _ModelAccess(
+        _claude_model_probe,
+        _claude_model_served,
+        _claude_model_unavailable,
+        _claude_probe_failure,
+        _claude_access_fingerprint,
+        "codex",
+    ),
+}
+
+
+def resolve_model_access(cfg: Config, profile: AuthoringProfile) -> AuthoringProfile:
+    """Resolve a default profile to its model or to the first served model of its fallback chain
+    before the real task runs.
 
     Explicit model pins have no fallback and bypass this probe. A confirmed result is cached per worker
     and account; failures that might be transient are never cached and never cause a downgrade.
     """
+    provider = profile.provider
     fallback = profile.fallback_model
     chain = profile.fallback_chain
-    if profile.provider != "codex" or not chain:
+    access = _MODEL_ACCESS.get(provider)
+    if access is None or not chain:
         return profile
 
-    fp = Quota(cfg).codex_account_fingerprint()
-    cache_path = cfg.quota_cache / "codex-model-access.json"
+    fp = access.fingerprint(cfg)
+    cache_path = cfg.quota_cache / f"{provider}-model-access.json"
     cached = _read_json_file(cache_path) or {}
     fetched_at = cached.get("fetched_at")
     age_ok = (
         isinstance(fetched_at, (int, float))
         and not isinstance(fetched_at, bool)
-        and time.time() - fetched_at <= CODEX_MODEL_ACCESS_TTL
+        and time.time() - fetched_at <= MODEL_ACCESS_TTL
     )
     if (
         fp is not None
@@ -311,34 +473,35 @@ def resolve_codex_model_access(cfg: Config, profile: AuthoringProfile) -> Author
     ):
         available = cached["available"]
         selected = cached.get("fallback_selected")
+        reason = cached.get("reason")
     else:
-        first = _codex_model_probe(cfg, profile.model)
-        if first.returncode == 0:
-            available = True
-        elif _codex_model_unavailable(first.returncode, first.stdout or ""):
-            # Reconfirm entitlement before persisting a downgrade. Both probes are trivial, read-only,
-            # and checkout-independent; the real authoring prompt is still executed exactly once.
-            second = _codex_model_probe(cfg, profile.model)
-            if second.returncode == 0:
+        first = access.probe(cfg, profile.model)
+        if access.served(first):
+            available, reason = True, None
+        elif reason := access.unavailable(first):
+            # Reconfirm before persisting a downgrade. Both probes are trivial, read-only, and
+            # checkout-independent; the real authoring prompt is still executed exactly once.
+            second = access.probe(cfg, profile.model)
+            if access.served(second):
                 available = True
-            elif _codex_model_unavailable(second.returncode, second.stdout or ""):
+            elif access.unavailable(second):
                 available = False
             else:
-                raise _codex_probe_failure(profile.model, second)
+                raise access.failure(profile.model, second)
         else:
-            raise _codex_probe_failure(profile.model, first)
-        # A plan without the primary need not have a fallback either. Probing each candidate here
-        # costs one trivial request; launching the agent on one the account lacks costs a checkout, a
-        # round, and a failure charged to whatever the round was working on.
+            raise access.failure(profile.model, first)
+        # A host without the primary need not have a fallback either. Probing each candidate here
+        # costs one trivial request; launching the agent on one it lacks costs a checkout, a round,
+        # and a failure charged to whatever the round was working on.
         selected = None
         if not available:
             for candidate in chain:
-                probe = _codex_model_probe(cfg, candidate)
-                if probe.returncode == 0:
+                probe = access.probe(cfg, candidate)
+                if access.served(probe):
                     selected = candidate
                     break
-                if not _codex_model_unavailable(probe.returncode, probe.stdout or ""):
-                    raise _codex_probe_failure(candidate, probe)
+                if not access.unavailable(probe):
+                    raise access.failure(candidate, probe)
 
         if fp is not None:
             cfg.quota_cache.mkdir(parents=True, exist_ok=True)
@@ -351,6 +514,7 @@ def resolve_codex_model_access(cfg: Config, profile: AuthoringProfile) -> Author
                     "fallback_model": fallback,
                     "available": available,
                     "fallback_selected": selected,
+                    "reason": reason,
                 },
             )
 
@@ -358,13 +522,13 @@ def resolve_codex_model_access(cfg: Config, profile: AuthoringProfile) -> Author
         return replace(profile, fallback_model=None)
     if not selected:
         raise NoProgress(
-            f"codex: none of {profile.model}, {', '.join(chain)} is available to this Codex account, so "
-            f"it cannot author. Set TAUCETI_AUTHORING_CODEX_MODEL (or --author-model) to a model the "
-            f"account serves, or author with --agent claude",
+            f"{provider}: none of {profile.model}, {', '.join(chain)} is available here ({reason}), so it "
+            f"cannot author. Set TAUCETI_AUTHORING_{provider.upper()}_MODEL (or --author-model) to a model "
+            f"this host serves, or author with --agent {access.other_agent}",
             scope="machine",
         )
-    log(f"codex: {profile.model} is unavailable to this subscription; using {selected}")
-    return replace(profile, model=selected, model_source="subscription fallback", fallback_model=None)
+    log(f"{provider}: {profile.model} is unavailable here ({reason}); using {selected}")
+    return replace(profile, model=selected, model_source="fallback", fallback_model=None)
 
 
 def _kiro_model_ids(payload) -> set[str]:

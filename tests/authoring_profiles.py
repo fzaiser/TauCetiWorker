@@ -41,6 +41,7 @@ try:
     check("committed Codex default", (codex.model, codex.effort), ("gpt-6-sol", "high"))
     check("committed Codex fallback chain", codex.fallback_model, "gpt-6-luna,gpt-5.6-sol")
     check("committed Claude default is exact", (claude.model, claude.effort), ("claude-opus-5-5", "high"))
+    check("committed Claude fallback chain", claude.fallback_model, "claude-opus-5,claude-sonnet-5-5")
     check("committed Kiro default is exact Sol", (kiro.model, kiro.effort), ("gpt-5.6-sol", "high"))
     default_host, _ = tc.host_agent_argv("PROMPT", codex)
     default_bubble = tc.agent_inner_cmd(codex)

@@ -265,9 +265,13 @@ AGENT_NAMES = {
 # Tried in order when the default Codex model is not served to the account: the smaller GPT-6, then
 # the previous generation's Sol, which a plan without GPT-6 Sol still lists.
 CODEX_AUTHORING_FALLBACK_MODELS = ("gpt-6-luna", "gpt-5.6-sol")
+# Tried in order when the default Claude model is not served here. A Claude Code build too old for
+# Opus 5.5 still serves the previous Opus; the smaller current generation comes after it.
+CLAUDE_AUTHORING_FALLBACK_MODELS = ("claude-opus-5", "claude-sonnet-5-5")
+AUTHORING_FALLBACK_MODELS = {"codex": CODEX_AUTHORING_FALLBACK_MODELS, "claude": CLAUDE_AUTHORING_FALLBACK_MODELS}
 # A model entitlement normally changes only when an account's subscription changes. Keep the
 # side-effect-free access probe out of every round while still noticing an upgrade promptly.
-CODEX_MODEL_ACCESS_TTL = 3600
+MODEL_ACCESS_TTL = 3600
 AUTHORING_DEFAULTS = {
     # Prefer flagship Sol for authoring. A cached preflight probe selects Luna only when Codex confirms
     # that this repository default is unavailable to the current subscription.

@@ -25,7 +25,7 @@ from .agents import (
     host_agent_argv,
     prepare_checkout,
     resolve_authoring_profile,
-    resolve_codex_model_access,
+    resolve_model_access,
     review_in_bubble,
     run_agent_host,
     run_in_bubble,
@@ -743,7 +743,7 @@ def dispatch(stage: str, w: Worker, sv: Survey, c: Candidate, opts: RoundOpts) -
     kiro_probe_profile = profile
     if stage == "review" and opts.work_model == "kiro":
         kiro_probe_profile = resolve_authoring_profile("kiro", cli_model=_kiro_review_model("kiro"))
-    needs_codex_probe = bool(profile and profile.provider == "codex" and profile.fallback_model)
+    needs_model_probe = bool(profile and profile.fallback_model)
     needs_kiro_probe = bool(kiro_probe_profile and kiro_probe_profile.provider == "kiro")
     # Preflight the host agent binary. A host round shells out to `codex`/`claude`/`pi`; if that binary
     # has slipped off the worker's PATH (an npm reinstall relocating codex is the case that bit us), the
@@ -751,16 +751,10 @@ def dispatch(stage: str, w: Worker, sv: Survey, c: Candidate, opts: RoundOpts) -
     # machine-wide outage marches PRs one-by-one to the "needs a human" escalation cap. Catch it HERE,
     # before launch, as a loud self-healing pause (NoProgress ⇒ backoff, no counter bump): every PR
     # would hit the identical failure, so it must not be charged to any single PR's error budget.
-    # A default Codex authoring round also makes its read-only entitlement probe on the host before
-    # entering Bubble, against the same mirrored subscription credential. Explicit Codex pins bypass it.
-    if not bubble or needs_codex_probe or needs_kiro_probe:
-        binname = (
-            "codex"
-            if needs_codex_probe
-            else "kiro-cli"
-            if needs_kiro_probe
-            else _host_agent_binary(stage, opts.work_model)
-        )
+    # A default Codex or Claude authoring round also makes its read-only model probe on the host before
+    # entering Bubble, against the same mirrored subscription credential. Explicit pins bypass it.
+    if not bubble or needs_model_probe or needs_kiro_probe:
+        binname = "kiro-cli" if needs_kiro_probe else _host_agent_binary(stage, opts.work_model)
         if binname and shutil.which(binname) is None:
             warn_red(
                 f"agent '{opts.work_model}' needs the `{binname}` CLI on PATH, but it is not "
@@ -779,10 +773,6 @@ def dispatch(stage: str, w: Worker, sv: Survey, c: Candidate, opts: RoundOpts) -
     # configured account), so it stays ahead of a network read that only matters if we get this far.
     if not _still_actionable(stage, w, sv, c):
         return None
-    if needs_codex_probe:
-        # Resolve Sol/Luna before the banner and before opening the authoring checkout. The probe is
-        # checkout-independent and the selected profile is then consumed exactly once by either backend.
-        opts.authoring_profile = resolve_codex_model_access(w.cfg, profile)
     if needs_kiro_probe:
         # `--list-models` is authenticated but sends no model prompt. Require
         # the exact pin before entering either backend; Kiro Auto is never a
@@ -799,6 +789,12 @@ def dispatch(stage: str, w: Worker, sv: Survey, c: Candidate, opts: RoundOpts) -
         prov = Quota(w.cfg).authorize_claude_launch()
         if not prov.available:
             raise NoProgress(f"claude: {prov.error or _unavail_reason(prov)[1]} — not launching this round")
+    if needs_model_probe:
+        # Resolve the default model to one this host serves before the banner and before opening the
+        # authoring checkout. The probe is checkout-independent, and the selected profile is then
+        # consumed exactly once by either backend. It comes after the Claude bootstrap so that the one
+        # request allowed to open a fresh window is the ledgered bootstrap turn, not this probe.
+        opts.authoring_profile = resolve_model_access(w.cfg, profile)
     fn = {
         "review": do_review,
         "fix": do_fix,

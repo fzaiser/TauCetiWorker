@@ -96,7 +96,7 @@ Reading these holds is fail-closed, so a GitHub error stops roadmap authoring. T
 to the normal intentions lifecycle: when its dated claim expires, the bot clears the assignee and
 the hold becomes inactive.
 
-## Codex model selection
+## Codex and Claude model selection
 
 The committed Codex authoring profile defaults to `gpt-6-sol`. Before the real
 authoring task, the worker makes a tiny read-only Sol access probe and caches the
@@ -110,8 +110,18 @@ context errors, malformed output, and ordinary failures pause the round without
 downgrading. Every probe is read-only, and the real authoring prompt is always
 executed exactly once.
 
-An explicit `--author-model`, `TAUCETI_AUTHORING_CODEX_MODEL`, or legacy
-`TAUCETI_CODEX_MODEL` is a pin: it bypasses both the probe and the fallback.
+The Claude profile defaults to `claude-opus-5-5` and is probed the same way with
+one minimal `claude -p` turn under the worker's own config dir, falling back to
+`claude-opus-5` and then `claude-sonnet-5-5`. Here the usual reason for a
+rejection is not the account but the installed Claude Code: a build older than
+the model refuses it with `version X or newer is required`, and the worker
+authors on the previous Opus until you run `claude update`. The cached answer
+is tied to the Claude Code build and config dir, so an update re-probes at the
+next round.
+
+An explicit `--author-model`, `TAUCETI_AUTHORING_CODEX_MODEL`,
+`TAUCETI_AUTHORING_CLAUDE_MODEL`, or legacy `TAUCETI_CODEX_MODEL` is a pin: it
+bypasses both the probe and the fallback.
 
 A generic authoring override is rejected with `--agent auto`, because the model
 or effort may not apply to whichever provider quota selection picks.
@@ -209,7 +219,7 @@ Flags win over these. Most are tuning knobs with sane defaults.
 | `TAUCETI_CLAUDE_CMD` | `claude` | The `claude` executable for host rounds; split as a shell word list, the usual flags appended. |
 | `TAUCETI_INHERIT_CLAUDE_CONFIG` | _(unset)_ | `1` gives an isolated worker your own `CLAUDE.md`, `settings.json`, and skills instead of its own. Off by default: a round should not depend on whose config dir it ran from, and personal instructions can contradict the task prompt. |
 | `TAUCETI_AUTHORING_CODEX_MODEL` / `TAUCETI_AUTHORING_CODEX_EFFORT` | `gpt-6-sol` (then Luna, then 5.6 Sol) / `high` | Codex authoring profile. An explicit model disables automatic fallback; unrelated host configuration remains available. |
-| `TAUCETI_AUTHORING_CLAUDE_MODEL` / `TAUCETI_AUTHORING_CLAUDE_EFFORT` | `claude-opus-5-5` / `high` | Claude authoring profile; the default is an exact model rather than the moving `opus` alias. |
+| `TAUCETI_AUTHORING_CLAUDE_MODEL` / `TAUCETI_AUTHORING_CLAUDE_EFFORT` | `claude-opus-5-5` (then Opus 5, then Sonnet 5.5) / `high` | Claude authoring profile; the default is an exact model rather than the moving `opus` alias. An explicit model disables automatic fallback. |
 | `TAUCETI_AUTHORING_KIRO_MODEL` / `TAUCETI_AUTHORING_KIRO_EFFORT` | `gpt-5.6-sol` / `high` | Exact Kiro authoring profile. `claude-opus-5` selects Opus; Kiro Auto is never used. |
 | `TAUCETI_REVIEW_CODEX_MODEL` | engine policy | Optional Codex review-model pin, independent of the authoring model. Unset preserves the review engine's own default and fallback. |
 | `TAUCETI_REVIEW_KIRO_MODEL` | `gpt-5.6-sol` | Exact Kiro review-model pin, independent of authoring. |
