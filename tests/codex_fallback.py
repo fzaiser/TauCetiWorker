@@ -80,12 +80,12 @@ def run(sequence, *, repeat=False, explicit=False):
         tc.agents.subprocess.run = fake_run
         try:
             try:
-                selected = tc.resolve_codex_model_access(cfg, profile)
+                selected = tc.resolve_model_access(cfg, profile)
                 error = None
             except tc.NoProgress as exc:
                 selected, error = None, exc
             if repeat and selected is not None:
-                selected_again = tc.resolve_codex_model_access(cfg, profile)
+                selected_again = tc.resolve_model_access(cfg, profile)
             else:
                 selected_again = None
         finally:
