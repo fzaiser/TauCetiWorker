@@ -57,6 +57,16 @@ nothing here, so that run is the only way back.
 A locked Keychain, which is what you get headless or over SSH, reports
 unavailable with a hint to `security unlock-keychain` first.
 
+A login belongs to one config dir. Claude Code keeps the Keychain item tied to
+the exact `$CLAUDE_CONFIG_DIR` the login was made under, unset counting as its
+own value, and every worker other than `default` runs under its own isolated
+config dir (`~/.tauceti/<id>/.claude`), which your login therefore does not
+cover. So an isolated worker gets a copy of your Keychain credential in that
+dir at the start of every round, with the refresh token stripped, exactly as a
+Linux worker gets a copy of your credential file: it can never rotate your
+token, and your own `claude` is what keeps the token fresh. You log in once, as
+yourself; `tauceti doctor` shows a `claude login` row per config dir.
+
 Bubble uses the credential file directly where Claude stores credentials in a
 file; on macOS it receives the Keychain credential through the private handoff
 described in [the sandbox notes](sandbox.md).

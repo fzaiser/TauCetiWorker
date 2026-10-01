@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""mirror_creds on macOS must skip the CLAUDE half only, and still mirror CODEX.
+"""mirror_creds on macOS mirrors CLAUDE from the login Keychain and CODEX from its file.
 
 macOS keeps Claude Code's credentials in the login Keychain, so there is no source FILE to mirror and
 the keychain-first pacer handles it. Codex is different on every platform: it keeps auth.json, and
@@ -78,13 +78,43 @@ try:
     check("codex: real refresh token replaced by the placeholder", out.get("refresh_token"), tc.CODEX_RT_PLACEHOLDER)
     check("codex: operator's real refresh token is not present", out.get("refresh_token") == "R", False)
 
-    # 3) Claude is still skipped on macOS: the Keychain is the store, and there is no source file. A
-    #    stray .credentials.json in the source dir must NOT be mirrored (that path is Linux-only).
+    # 3) Claude on macOS is mirrored from the login Keychain, never from a file in the source dir.
+    #    Claude Code ties a login to the exact $CLAUDE_CONFIG_DIR, so the operator's Keychain item
+    #    does not cover the worker's isolated dir; the stripped copy in that dir is what logs it in.
     (src_claude / ".credentials.json").write_text(
         json.dumps({"claudeAiOauth": {"accessToken": "SHOULD-NOT-BE-COPIED", "refreshToken": "R"}})
     )
-    tc.mirror_creds(cfg)
-    check("claude is NOT mirrored on macOS", (iso_claude / ".credentials.json").exists(), False)
+    keychain = {
+        "claudeAiOauth": {"accessToken": "KC-1", "refreshToken": "R", "refreshTokenExpiresAt": 1, "expiresAt": 2}
+    }
+    saved_keychain = tc.quota._claude_keychain_creds
+    tc.quota._claude_keychain_creds = lambda: keychain
+    try:
+        tc.mirror_creds(cfg)
+        copy = iso_claude / ".credentials.json"
+        got = json.loads(copy.read_text())["claudeAiOauth"]
+        check("claude IS mirrored on macOS, from the Keychain", got.get("accessToken"), "KC-1")
+        check("claude: the refresh token is stripped", "refreshToken" in got or "refreshTokenExpiresAt" in got, False)
+        check("claude: the access token's expiry is kept", got.get("expiresAt"), 2)
+        before = copy.stat().st_mtime_ns
+        tc.mirror_creds(cfg)
+        check("claude: an unchanged token is not rewritten", copy.stat().st_mtime_ns, before)
+        keychain["claudeAiOauth"]["accessToken"] = "KC-2"
+        tc.mirror_creds(cfg)
+        check(
+            "claude: a refreshed token is mirrored",
+            json.loads(copy.read_text())["claudeAiOauth"]["accessToken"],
+            "KC-2",
+        )
+        tc.quota._claude_keychain_creds = lambda: None
+        tc.mirror_creds(cfg)
+        check(
+            "claude: an unreadable Keychain leaves the copy alone",
+            json.loads(copy.read_text())["claudeAiOauth"]["accessToken"],
+            "KC-2",
+        )
+    finally:
+        tc.quota._claude_keychain_creds = saved_keychain
 
     # 4) Non-isolated (no marker) stays a no-op on macOS, as everywhere: the worker reads the live file.
     plain = tmp / "plain"

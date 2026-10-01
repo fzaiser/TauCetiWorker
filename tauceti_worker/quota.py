@@ -850,6 +850,38 @@ def claude_dir(home: Path) -> Path:
     return Path(d) if d else home / ".claude"
 
 
+def claude_login_status(config_dir: Path | None, timeout: float = 20) -> bool | None:
+    """Whether Claude Code considers `config_dir` logged in, as `claude auth status` reports it;
+    None for the environment as it is, which is what a non-isolated worker runs under.
+
+    A login belongs to the exact $CLAUDE_CONFIG_DIR it was made under, unset included: on macOS
+    Claude Code keeps the Keychain item tied to that value, so even naming the default dir
+    explicitly finds nothing. An isolated worker is logged in through the credential copy
+    mirror_creds keeps in its dir, so asking the CLI itself, under that value, is the only reliable
+    answer. None when `claude` is missing or its answer is unreadable."""
+    env = {**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)} if config_dir is not None else dict(os.environ)
+    try:
+        p = subprocess.run(
+            ["claude", "auth", "status", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            stdin=subprocess.DEVNULL,
+        )
+        value = json.loads(p.stdout or "{}")
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    logged_in = value.get("loggedIn") if isinstance(value, dict) else None
+    return logged_in if isinstance(logged_in, bool) else None
+
+
+def claude_login_hint() -> str:
+    """What logs an isolated worker's Claude in: the operator logging in as themselves. Workers never
+    hold a login of their own; they mirror the operator's credential at each round."""
+    return "log in as yourself with `claude auth login`; each worker mirrors your credential at its next round"
+
+
 def _write_json_atomic(path: Path, data: dict) -> None:
     """Non-corrupting credential-file write: a UNIQUE temp file in the same dir (a concurrent writer
     can't consume ours), preserve the existing mode (else 0600), fsync, then atomic rename. Raises on
@@ -957,24 +989,25 @@ def mirror_creds(cfg: Config) -> None:
     pacer cycle and before every bubble launch: in steady state it is two small reads + a string compare
     and no write.
 
-    macOS skips the CLAUDE half only. There the login Keychain is the store, so there is no source file
-    to mirror and the keychain-first pacer and _stage_claude_creds_for_bubble handle it instead. Codex
-    keeps a FILE on every platform, including macOS, and isolate_home writes its source marker there too
+    On macOS the login Keychain is the CLAUDE source rather than a file (see _mirror_keychain_creds);
+    the copy in the worker's dir is the same stripped shape either way. Codex keeps a FILE on every
+    platform, including macOS, and isolate_home writes its source marker there too
     — so returning early for the whole function left an isolated macOS worker pinned to whatever account
     was seeded, forever: never re-synced after an operator account switch, and still holding the real
     refresh token the once-only seed copied verbatim, which is exactly what this function exists to
     strip."""
-    if sys.platform != "darwin":
-        iso_claude = claude_dir(cfg.home)
-        src_claude = _read_marker(iso_claude / ".tauceti-creds-source")
-        if src_claude:
-            _mirror_creds_file(
-                Path(src_claude) / ".credentials.json",
-                iso_claude / ".credentials.json",
-                block_key="claudeAiOauth",
-                tok_key="accessToken",
-                rt_key="refreshToken",
-            )
+    iso_claude = claude_dir(cfg.home)
+    src_claude = _read_marker(iso_claude / ".tauceti-creds-source")
+    if src_claude and sys.platform == "darwin":
+        _mirror_keychain_creds(iso_claude / ".credentials.json")
+    elif src_claude:
+        _mirror_creds_file(
+            Path(src_claude) / ".credentials.json",
+            iso_claude / ".credentials.json",
+            block_key="claudeAiOauth",
+            tok_key="accessToken",
+            rt_key="refreshToken",
+        )
     src_codex = _read_marker(codex_dir(cfg.home) / ".tauceti-creds-source")
     if src_codex:  # absent on homes seeded before this marker existed
         _mirror_creds_file(
@@ -985,6 +1018,31 @@ def mirror_creds(cfg: Config) -> None:
             rt_key="refresh_token",
             rt_placeholder=CODEX_RT_PLACEHOLDER,
         )
+
+
+def _mirror_keychain_creds(dst: Path) -> None:
+    """The macOS counterpart of _mirror_creds_file: the operator's login Keychain is the source.
+
+    Claude Code ties a login to the exact $CLAUDE_CONFIG_DIR it was made under (the Keychain item
+    is keyed by it), so the operator's login never covers a worker's isolated dir, and asking the
+    operator to log in once per worker is no way to run a fleet. Claude Code does read a
+    `.credentials.json` in that dir, so the worker is given the operator's current access token
+    there, refresh token stripped, under the same rule as on Linux: the worker can never rotate the
+    operator's single-use token, and the operator's own `claude` is what keeps it fresh. Read-only on
+    the Keychain; an unreadable Keychain leaves the copy as it is."""
+    blob = _claude_keychain_creds()
+    sblk = _as_dict((blob or {}).get("claudeAiOauth"))
+    stok = sblk.get("accessToken")
+    if not stok:
+        return
+    dblk = _as_dict((_read_json_file(dst) or {}).get("claudeAiOauth"))
+    if dblk.get("accessToken") == stok and "refreshToken" not in dblk:
+        return
+    out = {k: v for k, v in sblk.items() if k not in ("refreshToken", "refreshTokenExpiresAt")}
+    try:
+        _write_json_atomic(dst, {"claudeAiOauth": out})
+    except OSError:
+        pass
 
 
 def _jwt_claims(token: str | None) -> dict:

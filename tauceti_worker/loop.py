@@ -26,7 +26,16 @@ from .constants import (
     POLL,
 )
 from .github import github_budget
-from .quota import Provider, Quota, _glyph, _hours, _pace_reason, _unavail_reason, quota_line
+from .quota import (
+    Provider,
+    Quota,
+    _glyph,
+    _hours,
+    _pace_reason,
+    _unavail_reason,
+    claude_login_hint,
+    quota_line,
+)
 from .review_diagnostics import failure_key
 from .round import run_round_subprocess
 from .runtime_status import STATUS_ENV, report_runtime, runtime_snapshot
@@ -196,7 +205,7 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
                     # Neither destination renders Rich markup: log() writes to stderr and a file, and a
                     # runtime-status detail is read back as data.
                     waiting = _wait_quota_line(snap, markup=False)
-                    log(f"quota: {waiting} — sleeping {nap}s")
+                    log(f"quota: {waiting} — sleeping {nap}s{_credential_hint('claude', snap.get('claude'))}")
                     report_runtime("waiting-quota", detail=waiting, next_action_at=time.time() + nap)
                     time.sleep(nap)
                     continue
@@ -422,11 +431,20 @@ def _credential_hint(agent: str, prov: Provider | None) -> str:
     error = (prov.error if prov else None) or ""
     # Match what THIS pacer writes, not any text mentioning a token: each provider phrases its own
     # refusal (see Quota.codex / Quota._claude_pass), and a transport error that happens to carry `401`
-    # or "token expired" from something in between is not our credential being rejected.
-    if "usage HTTP 401" not in error and "token expired; refresh left to the operator" not in error:
+    # or "token expired" from something in between is not our credential being rejected. The
+    # bootstrap turn relays Claude Code's own "Not logged in" verbatim, which is the one case where
+    # the operator IS logged in and the worker's config dir is not (see claude_login_status).
+    not_logged_in = agent == "claude" and ("Not logged in" in error or "Please run /login" in error)
+    if (
+        "usage HTTP 401" not in error
+        and "token expired; refresh left to the operator" not in error
+        and not not_logged_in
+    ):
         return ""
     if agent != "claude":
         return ". Run `codex login` to renew the credential"
+    if not_logged_in:
+        return f". Claude Code found no credential for this worker: {claude_login_hint()}"
     if sys.platform == "darwin":
         # The Keychain is the store here and the worker never writes it, so --auto-refresh does nothing
         # and offering it would send the operator after a flag that cannot help.

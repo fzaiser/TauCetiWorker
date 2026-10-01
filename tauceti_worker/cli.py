@@ -32,6 +32,7 @@ from .agents import (
     BUBBLE_MIN_VERSION,
     BUBBLE_REPO,
     KIRO_BUBBLE_MIN_VERSION,
+    _worker_iso_home,
     bubble_cmd_is_disposable,
     bubble_supports_allow_push,
     bubble_supports_lake_cache_service,
@@ -68,8 +69,17 @@ from .constants import (
 )
 from .github import GitHub, shared_claims_granted
 from .loop import cmd_loop, resolve_work_model
-from .paths import HERE, ensure_ssl_cert_file
-from .quota import Quota, _claude_keychain_creds, _safe_exists, claude_dir, codex_dir, parse_pace_curve
+from .paths import HERE, RUNTIME_ROOT, ensure_ssl_cert_file
+from .quota import (
+    Quota,
+    _claude_keychain_creds,
+    _safe_exists,
+    claude_dir,
+    claude_login_hint,
+    claude_login_status,
+    codex_dir,
+    parse_pace_curve,
+)
 from .review_engine import engine_selfcheck
 from .review_state import ReviewState
 from .round import Claims, RoundContext, cmd_heartbeat
@@ -966,6 +976,20 @@ def _have(tool: str) -> bool:
     return shutil.which(tool) is not None
 
 
+def _claude_config_dirs(cfg: Config) -> list[tuple[str, Path | None]]:
+    """The Claude config dirs this install's workers run under: the operator's own environment (what
+    a `default` worker and the pacer use; None, since a login is tied to the exact $CLAUDE_CONFIG_DIR
+    value and the operator's may well be unset) and the isolated copy of every worker slot on this
+    host."""
+    dirs: list[tuple[str, Path | None]] = [("operator", None)]
+    slots = sorted(p.name for p in (RUNTIME_ROOT / "state").glob("*") if p.is_dir() and p.name != "default")
+    for wid in slots:
+        iso = _worker_iso_home(wid) / ".claude"
+        if iso.is_dir():
+            dirs.append((wid, iso))
+    return dirs
+
+
 def cmd_doctor(args) -> int:
     """Report what the environment can do. The review engine is fetched on demand; a stable Bubble
     install is required only for real ``--bubble`` rounds."""
@@ -1023,6 +1047,22 @@ def cmd_doctor(args) -> int:
         rows.append(
             ("claude creds", _claude_keychain_creds() is not None, 'macOS login Keychain ("Claude Code-credentials")')
         )
+    # A credential in the store is not a login for every config dir: Claude Code ties a login to the
+    # config dir it was made from, and each isolated worker has its own. Ask the CLI for each one that
+    # a worker slot on this install uses, and say how to log the missing ones in.
+    if _have("claude"):
+        for label, config_dir in _claude_config_dirs(cfg):
+            logged_in = claude_login_status(config_dir)
+            where = str(config_dir) if config_dir is not None else "your environment, as `claude` sees it"
+            if logged_in is None:
+                rows.append(("claude login", False, f"{label}: `claude auth status` gave no answer for {where}"))
+            elif logged_in:
+                rows.append(("claude login", True, f"{label}: {where}"))
+            elif config_dir is not None and _claude_keychain_creds() is not None:
+                # Not yet mirrored (the worker has not run since the operator logged in), but it will be.
+                rows.append(("claude login", True, f"{label}: seeded from your Keychain at its next round"))
+            else:
+                rows.append(("claude login", False, f"{label}: not logged in — {claude_login_hint()}"))
     kiro_db = kiro_data_dir(cfg.home) / "data.sqlite3"
     rows.append(
         (
