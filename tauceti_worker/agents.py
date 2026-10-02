@@ -1365,7 +1365,11 @@ def run_agent_proc(
     with open(logf, "a", encoding="utf-8", errors="replace") as f:
         rc = run_rendered(f)
     if rc != 0:
-        summary = next((line.strip() for line in reversed(tail) if line.strip()), "")
+        # The provider's own terminal diagnostic says why the run ended. What a CLI writes to stderr
+        # while shutting down after it comes later in the transcript and explains nothing.
+        final = renderer.terminal_failure_text if renderer.terminal_failure_final else None
+        source = (final or "").splitlines() or list(tail)
+        summary = next((line.strip() for line in reversed(source) if line.strip()), "")
         log(
             f"{label.removeprefix('agent-')} agent failed (exit {rc}): {summary or 'no output'}  — {logf}",
             level="error",

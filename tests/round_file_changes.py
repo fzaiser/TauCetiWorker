@@ -17,6 +17,8 @@ Pinned here:
   4. A clean round says nothing, so the log does not grow a line per round for no reason.
   5. Output is bounded, and says how many it elided.
   6. Every git failure is silent: this is a log line and must never fail a round that succeeded.
+  7. A round that merges main into its branch reports its own commits and its conflict resolution,
+     not the files main gained in the meantime.
 
 Exit 0 = all assertions hold; 1 = a mismatch.
 """
@@ -127,6 +129,7 @@ def main():
             patch.object(tc.work_units, "spread_candidates", side_effect=lambda cs: cs),
             patch.object(tc.work_units, "_still_actionable", return_value=True),
             patch.object(tc.work_units, "_host_agent_binary", return_value="python3"),
+            patch.object(tc.work_units, "resolve_model_access", side_effect=lambda _cfg, profile: profile),
             patch.object(tc.work_units, "_progress_snapshot", return_value={}),
             patch.object(tc.work_units, "_progressed", side_effect=lambda _w, c, _pre: c.pr == 2),
             patch.object(tc.work_units, "do_fix", side_effect=fake_fix),
@@ -257,6 +260,37 @@ def main():
             check("no pre-head still works", run(repo, None) == "")
         except Exception as e:
             check(f"no pre-head does not raise (raised {e!r})", False)
+
+    # 7) the agent commits a fix, then merges a main that moved on and resolves one conflict.
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = fresh_repo(Path(tmp))
+        (repo / "Shared.lean").write_text("a\nb\nc\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "shared")
+        git(repo, "branch", "-M", "main")
+        git(repo, "checkout", "-qb", "pr")
+        pre = git(repo, "rev-parse", "HEAD").stdout.strip()
+        git(repo, "checkout", "-q", "main")
+        for i in range(3):
+            (repo / f"FromMain{i}.lean").write_text("x\n")
+        (repo / "Shared.lean").write_text("a\nMAIN\nc\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "main moved on")
+        git(repo, "update-ref", "refs/remotes/origin/main", "main")
+        git(repo, "checkout", "-q", "pr")
+        (repo / "Fix.lean").write_text("fix\n")
+        (repo / "Shared.lean").write_text("a\nPR\nc\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "fix")
+        git(repo, "merge", "-q", "origin/main")
+        (repo / "Shared.lean").write_text("a\nBOTH\nc\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "merge main")
+        out = run(repo, pre)
+        check("a round that merged main reports its own fix", "Fix.lean" in out)
+        check("...and the file whose conflict it resolved", "Shared.lean" in out)
+        check("...but none of what main gained", "FromMain" not in out)
+        check("...and counts only its own files", "(2 changed" in out)
 
     # The hook is wired only where an agent edits the host checkout.
     src = (REPO / "tauceti_worker" / "work_units.py").read_text()
