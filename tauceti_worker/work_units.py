@@ -584,6 +584,10 @@ def log_round_file_changes(cfg: Config, pre_head: str | None, since: float | Non
     busy day thousands of files the agent never touched. Commits already on origin/main, and commits
     older than the round (`since`), are therefore left out.
 
+    Each remaining commit is counted by itself, never as one diff across the range: a round that
+    merges main into its branch would otherwise be credited with everything main gained. A merge
+    counts for what its author changed on top of the automatic merge, the conflict resolutions.
+
     Best effort throughout: this is a log line. Any git failure is silently nothing rather than an
     error on a round that may well have succeeded."""
 
@@ -594,22 +598,30 @@ def log_round_file_changes(cfg: Config, pre_head: str | None, since: float | Non
             return ""
         return p.stdout if p.returncode == 0 else ""
 
-    committed = ""
+    committed: dict[str, list[int]] = {}
     if pre_head:
         window = [f"--since={time.strftime('%Y-%m-%dT%H:%M:%S%z', time.localtime(since))}"] if since else []
         upstream = ["--not", "origin/main"] if git("rev-parse", "--verify", "-q", "origin/main").strip() else []
-        own = git("log", "--format=%H", *window, f"{pre_head}..HEAD", *upstream).split()
-        committed = git("diff", "--stat", f"{own[-1]}^..HEAD") if own else ""
+        own = ["--numstat", "--format=", *window, f"{pre_head}..HEAD", *upstream]
+        # A git too old for --remerge-diff fails the first form; it then reports the ordinary commits.
+        numstat = git("log", "--remerge-diff", *own) or git("log", "--no-merges", *own)
+        for ln in numstat.splitlines():
+            added, _, rest = ln.partition("\t")
+            deleted, _, path = rest.partition("\t")
+            if path:
+                totals = committed.setdefault(path, [0, 0])
+                totals[0] += int(added) if added.isdigit() else 0  # a binary file counts as "-"
+                totals[1] += int(deleted) if deleted.isdigit() else 0
     dirty = [ln for ln in git("status", "--porcelain").splitlines() if ln.strip()]
-    if not committed.strip() and not dirty:
+    if not committed and not dirty:
         return
-    if committed.strip():
-        lines = [ln for ln in committed.splitlines() if ln.strip()]
-        log(f"  files committed this round ({len(lines) - 1} changed):")
-        for ln in lines[:_MAX_CHANGED_FILES]:
-            log(f"    {ln.strip()}")
-        if len(lines) > _MAX_CHANGED_FILES:
-            log(f"    … {len(lines) - _MAX_CHANGED_FILES} more")
+    if committed:
+        added, deleted = (sum(t[i] for t in committed.values()) for i in (0, 1))
+        log(f"  files committed this round ({len(committed)} changed, +{added} -{deleted}):")
+        for path, (plus, minus) in list(committed.items())[:_MAX_CHANGED_FILES]:
+            log(f"    {path}  +{plus} -{minus}")
+        if len(committed) > _MAX_CHANGED_FILES:
+            log(f"    … {len(committed) - _MAX_CHANGED_FILES} more")
     if dirty:
         # Uncommitted work after the round is worth seeing: it is what a round that gave up, or
         # verified and then edited again, leaves behind.

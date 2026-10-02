@@ -276,6 +276,28 @@ try:
         tc.agents.subprocess.Popen = worked_then_provider_failure
         tc.run_agent_proc(["claude"], env={}, logdir=Path(td), label="agent-claude", provider="claude")
         check("structured work prevents a false attempt refund", tc.take_last_agent_infra_failure(), None)
+
+        def capacity_then_shutdown_noise(*_args, **_kwargs):
+            events = [
+                {"type": "thread.started", "thread_id": "t"},
+                {"type": "error", "message": "Selected model is at capacity. Please try a different model."},
+                {
+                    "type": "turn.failed",
+                    "error": {"message": "Selected model is at capacity. Please try a different model."},
+                },
+            ]
+            noise = (
+                "2026-10-02T13:09:51Z ERROR codex_core::session: failed to record rollout items: thread t not found\n"
+            )
+            return FakeProc("\n".join(tc.json.dumps(item) for item in events) + "\n" + noise, returncode=1)
+
+        tc.agents.subprocess.Popen = capacity_then_shutdown_noise
+        tc.run_agent_proc(["codex"], env={}, logdir=Path(td), label="agent-codex", provider="codex")
+        check(
+            "the provider's diagnostic outranks what the CLI logs while shutting down",
+            tc.runtime_status.read_json(status_file).get("failure_reason"),
+            "codex agent exited with status 1: Selected model is at capacity. Please try a different model.",
+        )
 finally:
     tc.agents.subprocess.Popen = saved_popen
     if saved_stream is None:
