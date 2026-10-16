@@ -44,6 +44,7 @@ RUN_STDLIB=(
   agent_transcript.py
   auto_stage_priority.py
   automatic_bump.py
+  auto_roadmap_scope.py
   authoring_profiles.py
   bubble_cache.py
   bubble_version.py
