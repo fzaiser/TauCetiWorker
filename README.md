@@ -193,8 +193,9 @@ Roadmap rounds steer toward one area, a subdirectory of the
 [roadmap](https://github.com/TauCetiProject/TauCetiRoadmap):
 
 - `--roadmap-only <area>` pins it. An empty value means all areas. With nothing
-  set, each round picks a fresh random area, so an unpinned `--loop` roams the
-  whole roadmap over time.
+  set, existing work is considered across all eligible areas before authoring
+  picks a fresh random area, so an unpinned `--loop` roams the whole roadmap
+  over time.
 - `--roadmap-skip <area>[,<area>...]` excludes areas from both the random pick
   and the all-areas case. `--roadmap-only` wins on overlap.
 - `--source <path-or-url>` adapts compatible material from an existing repository,

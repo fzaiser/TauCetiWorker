@@ -676,8 +676,8 @@ def survey(
     began = time.monotonic()
     _f = selected_roadmap if selected_roadmap is not None else roadmap_only()
     enabled = set(AUTO_STAGES if stages is None else stages)
-    # Authoring rounds pass their selected area before any history reads; status
-    # and dashboard calls keep "auto" stable rather than randomly changing scope.
+    # Automatic rounds survey all eligible areas; do_roadmap chooses an authoring
+    # area only after the existing work has been considered.
     sv = Survey(
         worker_id=cfg.wid,
         roadmap_only=("auto" if _f is None else (_f or "any")),

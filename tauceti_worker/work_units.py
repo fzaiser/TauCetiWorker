@@ -336,11 +336,6 @@ def run_round(w: Worker, opts: RoundOpts) -> int:
         scope = roadmap_only()
         if getattr(opts, "prs", ()):
             scope = "any"  # explicit targets override the ambient roadmap
-        elif scope is None and not opts.dry_run and want(opts.only, "roadmap"):
-            all_areas = roadmap_areas(w.gh)
-            areas = [area for area in all_areas if area not in roadmap_skip()]
-            scope = random.choice(areas) if areas else ("auto" if all_areas else "any")
-            log(f"survey roadmap: {scope} (selected before PR history reads)")
         sv = survey(
             w.cfg,
             w.gh,

@@ -43,6 +43,10 @@ PRs, and PRs for roadmaps outside the selected scope do not consume its authorin
 limit. An open roadmap PR whose area is temporarily unknown counts conservatively
 in every scope until its area label resolves.
 
+Automatic runs consider repairs and reviews across all non-skipped areas before
+choosing a random area for new authoring. Reaching the authoring limit still
+allows work on existing PRs.
+
 ## The claim namespace
 
 Mathlib overlap phases require the canonical shared namespace and never use its
