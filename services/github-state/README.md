@@ -119,7 +119,7 @@ github_state_url = "https://github-state.taucetiproject.org"
 github_state_token_file = "/home/kim/.config/tauceti-github-state/client-token"
 ```
 
-The cutoff defaults to eight and must be a positive integer. Read-policy
+The cutoff defaults to 32 and must be a positive integer. Read-policy
 configuration changes wait for an idle round boundary; they must not interrupt
 paid sessions. Direct quota failures retain publication intents privately,
 including copied body files, so replay does not repeat paid authoring. Ambiguous
