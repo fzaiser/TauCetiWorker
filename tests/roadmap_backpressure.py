@@ -111,26 +111,26 @@ def main():
         )
     raw += [
         {
-            "number": 20,
+            "number": tc.MAX_OPEN_PRS + 1,
             "author": {"login": "me"},
             "labels": [{"name": "roadmap/PDE"}],
             "statusCheckRollup": [],
         },
         {
-            "number": 21,
+            "number": tc.MAX_OPEN_PRS + 2,
             "author": {"login": "peer"},
             "labels": [{"name": "roadmap/Topology"}],
             "statusCheckRollup": [],
         },
         {
-            "number": 22,
+            "number": tc.MAX_OPEN_PRS + 3,
             "author": {"login": "me"},
             "isDraft": True,
             "labels": [{"name": "roadmap/Topology"}],
             "statusCheckRollup": [],
         },
         {
-            "number": 23,
+            "number": tc.MAX_OPEN_PRS + 4,
             "author": {"login": "me"},
             "labels": [{"name": "enhancement"}],
             "statusCheckRollup": [],
