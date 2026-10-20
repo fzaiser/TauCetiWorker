@@ -137,6 +137,29 @@ check("a round is spawned", len(spawned), 1)
 check("...pinned to claude", "claude" in spawned[0], True)
 check("...carrying the launch-stage authorization", "--claude-bootstrap" in spawned[0], True)
 check("the loop itself never made the request", CALLS["bootstrap"], 0)
+check("ordinary initialization keeps pacing enabled in the child", "--ignore-quota" in spawned[0], False)
+
+healthy_idle = IDLE
+IDLE = {"five_hour": None, "seven_day": {"utilization": 90, "resets_at": iso(6 * 86400)}}
+for ignore in (False, True):
+    args.ignore_quota = ignore
+    spawned.clear()
+    try:
+        tc.cmd_loop(args, make_cfg(f"idle-paced-{ignore}"), only=["review"], agent="claude")
+    except Stop:
+        pass
+    check(f"idle session + weekly over pace: ignore_quota={ignore} controls launch", len(spawned), int(ignore))
+    if ignore:
+        check("the child receives the pacing override", "--ignore-quota" in spawned[0], True)
+        check("the child receives bootstrap authorization", "--claude-bootstrap" in spawned[0], True)
+check("selecting an idle, over-pace provider spends nothing", CALLS["bootstrap"], 0)
+cfg = make_cfg("one-shot-ignore")
+check(
+    "one-shot selection also honors --ignore-quota for initialization",
+    tc.resolve_work_model(cfg, "claude", dry=False, ignore_quota=True),
+    ("claude", True),
+)
+IDLE = healthy_idle
 
 tc.loop.time = real_time
 tc.loop.github_budget = real_budget
@@ -158,11 +181,51 @@ except tc.NoProgress as e:
     check("a round with no work raises NoProgress", "no eligible work" in str(e), True)
 check("deciding there is nothing to do costs no quota", CALLS["bootstrap"], 0)
 
+# Exercise initialization and the fresh-usage gate together, without launching a real agent.
+tc.work_units._host_agent_binary = lambda stage, model: None
+tc.work_units._still_actionable = lambda *a: True
+ran = []
+tc.work_units.do_review = lambda *a, **k: ran.append("review") or 0
+opts.ignore_quota = True
+for label, session, weekly, expected_run in (
+    ("over pace", {"utilization": 1, "resets_at": iso(4 * 3600)}, 90, True),
+    ("weekly exhausted", {"utilization": 1, "resets_at": iso(4 * 3600)}, 100, False),
+    ("session start limit", {"utilization": 95, "resets_at": iso(4 * 3600)}, 90, False),
+    ("unreadable session", {"utilization": 1, "resets_at": "invalid"}, 90, False),
+    ("still idle", None, 90, False),
+):
+    CALLS["bootstrap"] = 0
+    ran.clear()
+    fresh = {"five_hour": session, "seven_day": {"utilization": weekly, "resets_at": iso(6 * 86400)}}
+
+    def launch_endpoint(url, headers, timeout=15, *, fresh=fresh):
+        payload = (
+            fresh
+            if CALLS["bootstrap"]
+            else {
+                "five_hour": None,
+                "seven_day": {"utilization": 90, "resets_at": iso(6 * 86400)},
+            }
+        )
+        return 200, payload, None
+
+    tc.quota._http_get_json = launch_endpoint
+    cfg = make_cfg(f"launch-{label}")
+    w = tc.Worker(cfg, None, None, tc.Counters(cfg), None, None)
+    try:
+        tc.work_units.dispatch("review", w, tc.Survey(worker_id=cfg.wid), tc.Candidate(1, "head", ""), opts)
+    except tc.NoProgress:
+        pass
+    check(f"fresh usage {label}: exactly one initialization request", CALLS["bootstrap"], 1)
+    check(f"fresh usage {label}: launch respects hard limits", bool(ran), expected_run)
+opts.ignore_quota = False
+tc.quota._http_get_json = stub_endpoint
+
 # --- with work in hand, dispatch asks for authorization exactly once ----------------------------------
 authorized = {"n": 0}
 
 
-def stub_authorize(_self):
+def stub_authorize(_self, *, ignore_quota=False):
     authorized["n"] += 1
     return tc.Provider("claude", True, "opus", [tc.Window("session", 1.0, 20.0, None, "under-pace", 20.0)])
 
@@ -182,7 +245,7 @@ authorized["n"] = 0
 ran.clear()
 
 
-def stub_refuse(_self):
+def stub_refuse(_self, *, ignore_quota=False):
     authorized["n"] += 1
     win = tc.Window("session", None, 0.0, None, tc.STATE_IDLE, 0.0, "bootstrap failed: claude exited 1")
     return tc.Provider("claude", False, None, [win])

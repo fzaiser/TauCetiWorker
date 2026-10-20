@@ -1146,8 +1146,8 @@ def dispatch(stage: str, w: Worker, sv: Survey, c: Candidate, opts: RoundOpts) -
     # exists. A round that surveys and finds nothing never reaches this line, so deciding that there is
     # nothing to do costs no quota.
     if opts.claude_bootstrap and opts.work_model == "claude":
-        prov = Quota(w.cfg).authorize_claude_launch()
-        if not prov.available:
+        prov = Quota(w.cfg).authorize_claude_launch(ignore_quota=opts.ignore_quota)
+        if not prov.available and not (opts.ignore_quota and _unavail_reason(prov)[0]):
             raise NoProgress(f"claude: {prov.error or _unavail_reason(prov)[1]} — not launching this round")
     if needs_model_probe:
         # Resolve the default model to one this host serves before the banner and before opening the

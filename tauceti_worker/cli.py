@@ -374,7 +374,7 @@ def add_work_flags(p: argparse.ArgumentParser) -> None:
     )
     # Internal: the loop sets this on a round it selected while a Claude window was reset-but-unopened.
     # It authorizes the round's launch stage to spend ONE small claude request to open that window,
-    # once it has actually found work; it is not a way to bypass pacing (see Quota.authorize_claude_launch).
+    # once it has actually found work; --ignore-quota separately controls pacing at launch.
     p.add_argument(
         "--claude-bootstrap",
         dest="claude_bootstrap",

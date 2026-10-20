@@ -233,8 +233,8 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
                 prov = snap.get(agent)
                 verdict = _ignore_quota_verdict(_chosen, prov)
                 # An unopened window is the one hard block --ignore-quota may still clear, because the
-                # clearing is a bounded, pace-respecting request rather than an override of a real limit.
-                if verdict == "wait" and agent == "claude" and claude_pending_init(snap):
+                # clearing is a bounded request rather than an override of a real limit.
+                if verdict == "wait" and agent == "claude" and claude_pending_init(snap, ignore_quota=True):
                     verdict, pending_init = "run", True
                 if verdict == "wait":
                     why = prov.error if (prov and prov.error) else (_unavail_reason(prov)[1] if prov else "unavailable")
@@ -325,7 +325,10 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
             if recovery_only:
                 tail += ["--recovery-only", "--agent", agent]
             elif model:
-                tail += ["--agent", model, "--ignore-quota"]  # loop already paced; child must not re-pace
+                tail += ["--agent", model]
+                # Initialization rechecks pacing unless the operator explicitly bypassed it.
+                if not pending_init or ignore_quota:
+                    tail.append("--ignore-quota")
             if recovery_only:
                 if getattr(args, "author_model", None):
                     tail += ["--author-model", args.author_model]
@@ -631,15 +634,15 @@ def _retry_hint(prov: Provider | None) -> str:
     return f"; retry in ~{round(after / 60)}m" if after < 90 * 60 else f"; retry in ~{_hours(after)}"
 
 
-def claude_pending_init(snap: dict) -> bool:
+def claude_pending_init(snap: dict, *, ignore_quota: bool = False) -> bool:
     """True when Claude is unavailable ONLY because a window has reset and nothing has opened the next
-    cycle yet, and initializing it is within the operator's pace curve (Quota decides both, purely).
+    cycle yet, subject to pacing unless explicitly ignored (Quota decides both, purely).
 
     Such a provider is not "out of quota" — it is unopened, and only a Claude request can open it. It
     may therefore be selected PROVISIONALLY: nothing is spent by selecting it, and the round makes the
     one bootstrap request at its launch stage, after it has found actual work to do."""
     prov = snap.get("claude")
-    return bool(prov and prov.bootstrap_eligible)
+    return bool(prov and prov.can_bootstrap(ignore_quota=ignore_quota))
 
 
 def resolve_work_model(
@@ -674,8 +677,8 @@ def resolve_work_model(
         # rounds (see cmd_loop). Reading usage costs no quota, and firing a round at an exhausted or
         # unreadable provider only buys a clone, an engine launch, and a scoreboard full of errors.
         verdict = _ignore_quota_verdict(chosen, snap.get(agent))
-        if verdict == "wait" and agent == "claude" and claude_pending_init(snap):
-            return "claude", True  # the one hard block a bounded, pace-respecting request may clear
+        if verdict == "wait" and agent == "claude" and claude_pending_init(snap, ignore_quota=True):
+            return "claude", True
         if verdict == "wait":
             prov = snap.get(agent)
             why = prov.error if (prov and prov.error) else (_unavail_reason(prov)[1] if prov else "unavailable")

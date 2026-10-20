@@ -129,6 +129,10 @@ The bootstrap runs only under these conditions:
 If the window still is not reporting afterwards, the status reads
 `session bootstrap attempted; awaiting fresh usage` and the worker stays parked.
 
+With `--ignore-quota`, initialization bypasses the pace curve and sibling windows' pacing budgets, just as ordinary work does.
+Exhausted or unreadable windows and the five-hour start limit still block initialization.
+The shared reservation still permits only one attempt, and fresh usage must confirm that the windows are active and below their hard limits before work starts.
+
 ## Why "strictly under"
 
 A provider is available while `used%` is strictly under the budget for the

@@ -274,6 +274,51 @@ for label, payload, pace in siblings:
     check(f"idle session + {label} ⇒ not available", p.available, False)
     os.environ.pop("TAUCETI_PACE", None)
 
+# Ignoring pace permits initialization, but cannot override unreadable or exhausted windows.
+for label, payload, pace in siblings:
+    boot = Bootstrapper().install()
+    tc.quota._http_get_json = Endpoint(payload, active(session_pct=1, weekly_pct=90))
+    if pace:
+        os.environ["TAUCETI_PACE"] = pace
+    q = make_quota()
+    allowed = label in {"weekly at budget", "weekly over pace"}
+    snapshot = q.claude()
+    check(f"{label}: ordinary selection stays blocked", tc.claude_pending_init({"claude": snapshot}), False)
+    check(
+        f"{label}: selection with --ignore-quota respects hard limits",
+        tc.claude_pending_init({"claude": snapshot}, ignore_quota=True),
+        allowed,
+    )
+    # Start the scripted response sequence again for the launch-stage read.
+    tc.quota._http_get_json = Endpoint(payload, active(session_pct=1, weekly_pct=90))
+    p = q.authorize_claude_launch(ignore_quota=True)
+    check(f"{label}: --ignore-quota bootstrap requests", boot.calls, int(allowed))
+    if allowed:
+        check(f"{label}: fresh usage still reports pacing", tc._unavail_reason(p)[0], True)
+    os.environ.pop("TAUCETI_PACE", None)
+
+boot = Bootstrapper().install()
+tc.quota._http_get_json = Endpoint(IDLE, active(session_pct=1))
+os.environ["TAUCETI_PACE"] = "0:0,90:0,100:95"
+p = make_quota().authorize_claude_launch(ignore_quota=True)
+check("--ignore-quota also overrides an initial zero-budget plateau", boot.calls, 1)
+os.environ.pop("TAUCETI_PACE", None)
+
+for pct in (95, 100):
+    boot = Bootstrapper().install()
+    tc.quota._http_get_json = Endpoint({"five_hour": active(session_pct=pct)["five_hour"], "seven_day": None})
+    p = make_quota().authorize_claude_launch(ignore_quota=True)
+    check(f"session {pct}% prevents weekly initialization even with --ignore-quota", boot.calls, 0)
+
+for ok in (True, False):
+    boot = Bootstrapper(ok=ok, detail="test failure").install()
+    tc.quota._http_get_json = Endpoint({"five_hour": None, "seven_day": weekly(90)})
+    q = make_quota()
+    q.authorize_claude_launch(ignore_quota=True)
+    p = q.authorize_claude_launch(ignore_quota=True)
+    check(f"--ignore-quota preserves the reservation after bootstrap success={ok}", boot.calls, 1)
+    check("a reserved idle window cannot be selected again", p.can_bootstrap(ignore_quota=True), False)
+
 # Nor does an unreadable window of any other kind buy a request.
 for label, payload in (("malformed", MALFORMED), ("absent", ABSENT)):
     boot = Bootstrapper().install()

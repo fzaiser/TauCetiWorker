@@ -388,6 +388,10 @@ class Provider:
     # The usage endpoint answered HTTP 429 (or we are still in the cooldown one started). Set whether the
     # verdict came from a cached reading or not, so the latest fetch's outcome is never lost to the cache.
     rate_limited: bool = False
+    bootstrap_available: bool = False  # initialization is safe if pacing is explicitly ignored
+
+    def can_bootstrap(self, *, ignore_quota: bool = False) -> bool:
+        return self.bootstrap_eligible or (ignore_quota and self.bootstrap_available)
 
 
 def _finite_num(x: object) -> bool:
@@ -1871,20 +1875,20 @@ class Quota:
                     )
         return prov
 
-    def authorize_claude_launch(self) -> Provider:
+    def authorize_claude_launch(self, *, ignore_quota: bool = False) -> Provider:
         """The launch stage: the ONLY place a Claude request may be spent on initializing a window.
 
         Callers must have established, before calling, that there is concrete work to do, that the
         non-model preflight passes, and that Claude is the provider selected for that work. This
-        method enforces what remains — that the sole unresolved condition is one or more recognized
-        idle windows, that every other window is active WITH headroom, and that the operator's pace
-        curve permits initializing a fresh window at all.
+        method requires recognized idle windows and readable sibling windows below their hard limits.
+        Unless `ignore_quota` is set, siblings must also be under pace and the
+        pace curve must permit initializing a fresh window.
 
         The request is taken under a durable, cross-worker reservation, so a crash between the request
         and its outcome cannot license a second one. Afterwards the cache is dropped and a FRESH usage
         response decides: a bootstrap never grants availability by itself."""
         prov = self.claude(renew=True)  # about to spend a request: the token must be live
-        if prov.available or not prov.bootstrap_eligible:
+        if prov.available or not prov.can_bootstrap(ignore_quota=ignore_quota):
             return prov  # nothing to do, or something other than an initializable idle window blocks
         windows = list(prov.pending_bootstrap)
         # Freeze the identity across reserve/request/settle. A request can cross a wall-clock period
@@ -2033,7 +2037,8 @@ class Quota:
         none of them has to act on it. It requires ALL of: at least one idle window; every non-idle
         window active with positive headroom (a sibling at budget, over pace, exhausted, absent or
         malformed forbids it — we would be spending against a constraint we cannot honour or cannot
-        read); and a pace curve under which a fresh window has budget at all."""
+        read); and a pace curve under which a fresh window has budget at all.
+        `bootstrap_available` retains the same hard limits and reservation check but ignores pacing."""
         notes = notes or {}
         wins = [_window_from_reading(r, notes.get(r.window), now) for r in readings]
         err = None
@@ -2047,7 +2052,12 @@ class Quota:
         # A live ledger record means this episode already has a request in flight or completed. Keep
         # the parent loop asleep as well as refusing the launch-stage reservation: otherwise it would
         # repeatedly pay for a deep GitHub survey only to discover the same reservation again.
-        eligible = bool(idle) and others_ok and not bootstrap_recorded and _idle_init_block() is None
+        initializable = (
+            bool(idle)
+            and not bootstrap_recorded
+            and all(w.status in {STATE_IDLE, STATUS_UNDER_PACE, *SOFT_STATUSES} for w in wins)
+        )
+        eligible = initializable and others_ok and _idle_init_block() is None
         return Provider(
             "claude",
             avail,
@@ -2057,7 +2067,8 @@ class Quota:
             self._next_eligible(wins, now),
             None,
             eligible,
-            idle if eligible else [],
+            idle if initializable else [],
+            bootstrap_available=initializable,
         )
 
     def _claude_from_payload(self, payload: dict) -> Provider:
