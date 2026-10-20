@@ -204,7 +204,8 @@ check("identity: used 60 @ elapsed 50 -> over-pace", status(60, 50, "0:0,100:100
 check("identity: used 40 @ elapsed 50 -> under-pace", status(40, 50, "0:0,100:100") == "under-pace")
 check("curve 50:70: used 60 @ elapsed 50 -> under-pace", status(60, 50, "50:70") == "under-pace")
 check("curve 50:70: used 80 @ elapsed 50 -> over-pace", status(80, 50, "50:70") == "over-pace")
-check("curve tail uncapped: used 95 @ elapsed 100 -> under-pace", status(95, 100, "90:90") == "under-pace")
+check("curve tail uncapped: used 94 @ elapsed 100 -> under-pace", status(94, 100, "90:90") == "under-pace")
+check("session start limit beats the curve: used 95 -> start-limit", status(95, 100, "90:90") == "start-limit")
 check("exhausted beats the curve: used 100 @ elapsed 5 -> exhausted", status(100, 5, "0:100") == "exhausted")
 os.environ["TAUCETI_PACE"] = "50:70"
 w = tc._classify_window("session", 80, 50, None, False)

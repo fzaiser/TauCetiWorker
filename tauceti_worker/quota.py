@@ -322,12 +322,15 @@ STATUS_OVER_PACE = "over-pace"
 
 STATUS_EXHAUSTED = "exhausted"
 
+STATUS_START_LIMIT = "start-limit"
+SESSION_START_LIMIT = 95.0
+
 # Soft = real quota remains and only the burn-pace throttle is holding us; this is what --ignore-quota
-# may override. Hard = fail-closed: exhausted, or a window we cannot read / cannot legitimately spend
+# may override. Hard = fail-closed: the launch reserve, exhausted, or a window we cannot read / spend
 # against. `unknown` is the generic fail-closed status the codex reader still emits.
 SOFT_STATUSES = (STATUS_AT_BUDGET, STATUS_OVER_PACE)
 
-HARD_STATUSES = (STATUS_EXHAUSTED, STATE_IDLE, STATE_ABSENT, STATE_MALFORMED, "unknown")
+HARD_STATUSES = (STATUS_EXHAUSTED, STATUS_START_LIMIT, STATE_IDLE, STATE_ABSENT, STATE_MALFORMED, "unknown")
 
 # How a single JSON field read: omitted, explicitly null, a usable value, or garbage. Collapsing these
 # is what let an invalid reset timestamp read the same as an explicit null (⇒ "fresh window").
@@ -360,7 +363,7 @@ class Window:
     used: float | None  # percent 0..100 (None = unknown)
     elapsed: float | None  # percent 0..100 (None = unknown)
     resets_at: float | None  # epoch seconds
-    status: str  # under-pace | over-pace | exhausted | idle | absent | malformed | unknown
+    status: str  # under-pace | at-budget | over-pace | start-limit | exhausted | idle | absent | malformed | unknown
     budget: float | None = None  # pace budget (max allowed used%) at this window's elapsed%, if computed
     detail: str | None = None  # why a non-pacing status happened, phrased to follow the window name
 
@@ -413,6 +416,8 @@ def _classify_window(
     # curve's budget is 0 at elapsed 0, so a fresh window sits exactly on its budget.)
     if u >= 100:
         st = STATUS_EXHAUSTED
+    elif name == "session" and u >= SESSION_START_LIMIT:
+        st = STATUS_START_LIMIT
     elif u < thr:
         st = STATUS_UNDER_PACE
     elif u == thr:
@@ -2318,7 +2323,7 @@ class Quota:
             if w.status in (STATUS_AT_BUDGET, STATUS_OVER_PACE):
                 paced = _pace_free_at(w, now)
                 soon.append(w.resets_at if paced is None else paced)
-            elif w.status == STATUS_EXHAUSTED:
+            elif w.status in (STATUS_EXHAUSTED, STATUS_START_LIMIT):
                 soon.append(w.resets_at)
         blocked = [t for t in soon if t]
         return min(blocked) if blocked else None
@@ -2394,6 +2399,8 @@ def _window_reason(w: Window) -> str:
     on "usage unknown", and the failures it used to cover need completely different responses."""
     if w.status == "exhausted":
         return f"{w.name} exhausted"
+    if w.status == STATUS_START_LIMIT:
+        return f"5-hour usage {w.used:g}% reached the {SESSION_START_LIMIT:g}% start limit; new work paused until reset"
     return f"{w.name} {w.detail}" if w.detail else f"{w.name} usage unknown"
 
 

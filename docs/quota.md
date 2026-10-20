@@ -3,6 +3,17 @@
 The README covers the pacing rule and the controls. This page covers where the
 usage numbers come from and how the pacer behaves at the edges.
 
+## Reserve for active work
+
+Claude and Codex stop admitting new work when their five-hour usage reaches 95%.
+Active rounds continue; the cutoff leaves the remaining allowance for them to finish.
+The loop waits for the window to reset, while a one-shot round reports the block and exits.
+This cutoff applies even with `--ignore-quota` or a pace curve that permits higher usage.
+Weekly usage retains its existing pacing and exhaustion checks.
+
+The reserve cannot guarantee that active rounds finish: several workers share the same allowance, and a long round may consume more than remains.
+An external `--quota-cmd` replaces the built-in quota checker and is responsible for its own admission policy.
+
 ## Credential sources
 
 The pacer reads the credential files the official CLIs already maintain,

@@ -368,7 +368,8 @@ def add_work_flags(p: argparse.ArgumentParser) -> None:
         dest="ignore_quota",
         action="store_true",
         help="ignore the quota PACER (run the requested --agent even when ahead of the burn pace); "
-        "a HARD block — a window at 100%%, unreadable usage, or the usage endpoint refusing to answer — "
+        "a HARD block — 5-hour usage at 95%%, a window at 100%%, unreadable usage, "
+        "or the usage endpoint refusing to answer — "
         "still backs off (needs an explicit paced --agent codex|claude — 'auto' can't choose without the pacer)",
     )
     # Internal: the loop sets this on a round it selected while a Claude window was reset-but-unopened.

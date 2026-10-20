@@ -221,9 +221,9 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
                 model = agent  # explicit unpaced provider; no subscription quota wait
             elif ignore_quota and not quota_cmd:
                 # --ignore-quota overrides PACING (the soft over-pace throttle), not AVAILABILITY. We
-                # still read the usage endpoint and wait out a HARD block: a window at 100% (exhausted),
-                # usage we cannot read (fail-closed), or the endpoint itself refusing to answer (its own
-                # 429 / a network failure). Only a soft over-pace block — real quota left, merely ahead of
+                # still read the usage endpoint and wait out a HARD block: the session start limit,
+                # a window at 100% (exhausted), or usage we cannot read (including HTTP 429 / network
+                # failures). Only a soft over-pace block — real quota left, merely ahead of
                 # the burn line — runs through here. Without this a pinned `--agent claude` worker re-fires
                 # every green PR into a rate-limited subscription, burning a clone + engine launch each
                 # round to post an all-error scoreboard.
@@ -548,7 +548,8 @@ def _ignore_quota_verdict(chosen: str | None, prov: Provider | None) -> str:
       "run"       — the provider is available (under pace), launch as usual.
       "over-pace" — a SOFT block: real quota remains, we are only ahead of the burn line. This is the
                     block --ignore-quota exists to override, so launch anyway.
-      "wait"      — a HARD block: a window at 100% (exhausted), usage we cannot read (fail-closed), or
+      "wait"      — a HARD block: the session start limit, a window at 100% (exhausted),
+                    usage we cannot read (fail-closed), or
                     the usage endpoint refusing to answer (its own 429 / a network error leaves `prov`
                     with no windows). Firing here only hits a dead provider, so back off even under
                     --ignore-quota.
@@ -694,5 +695,7 @@ def resolve_work_model(
     if chosen is None and claude_pending_init(snap):
         return "claude", True
     if chosen is None:
-        raise NoProgress(f"no model under pace right now (agent={agent}) — nothing to run this round")
+        raise NoProgress(
+            f"no model available right now (agent={agent}) — {quota_line(snap, markup=False)}; not launching this round"
+        )
     return chosen, False
