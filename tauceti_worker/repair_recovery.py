@@ -1153,6 +1153,8 @@ class WorkerBackend:
         from .agents import scope_policy, warm_host_build_caches
         from .verification import Verification
 
+        log(f"recovery PR #{m['pr']}: verifying saved source in {checkout}")
+        report_runtime("verifying", phase="recovery-verify", target=f"PR #{m['pr']}")
         policy = scope_policy(
             facts["labels"], facts["ref"], bump=m.get("authorization", {}).get("automatic_bump", False)
         )
@@ -1262,7 +1264,12 @@ class WorkerBackend:
             )
         except Exception as error:
             raise Wait("budget-refused", str(error)) from error
-        if chosen != profile.provider or pending:
+        if pending:
+            raise Wait(
+                "provider-initialization",
+                f"{profile.provider} session needs initialization; deferring recovery so ordinary work can bootstrap it",
+            )
+        if chosen != profile.provider:
             raise Wait("budget-refused", "Fresh provider admission did not authorize the original profile")
         raise_on_account_mismatch(self.w.cfg, auth.get("account") or self.opts.account, profile.provider, "recovery")
         return auth, profile, keys
@@ -1332,6 +1339,10 @@ class WorkerBackend:
                         conversation_reason="fresh-checkout-no-historical-cwd-rebinding",
                     )
                     try:
+                        log(f"recovery PR #{m['pr']}: {profile.provider} repairing saved source in {checkout}")
+                        report_runtime(
+                            "working", phase="recovery-repair", target=f"PR #{m['pr']}", verification_phase=None
+                        )
                         rc = run_agent_host(
                             checkout,
                             prompt,

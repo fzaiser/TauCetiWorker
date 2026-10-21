@@ -471,6 +471,14 @@ class Verification:
                     print(tail, file=sys.stderr, end="", flush=True)
         self.progress(f"{phase}: exit {entry['exit']}")
         if entry["exit"]:
+            if any(
+                f"ModuleNotFoundError: No module named {name!r}" in text for name in ("tauceti_tools", "tauceti_worker")
+            ):
+                raise Incomplete(
+                    f"{phase}: verification tooling cannot import an installed worker dependency; "
+                    f"check the Python environment (see {log})",
+                    reason="tool-missing",
+                )
             if "Argument list too long" in text:
                 raise Incomplete(
                     f"{phase}: command exceeded the operating system's argument-size limit; "
@@ -653,7 +661,9 @@ class Verification:
             merge = selected["merge_base"]
             if not merge:
                 raise Incomplete("shim-expiry: cannot determine merge-base registry")
-            args = ["python3", str(script), "--fail-on-available"]
+            args = [sys.executable, str(script), "--fail-on-available"]
+            # Shared wrappers also launch python3 internally.
+            env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", os.defpath)
             baseline = self.directory / "base"
             baseline.mkdir(exist_ok=True)
             try:

@@ -1,4 +1,4 @@
-"""Whole-library header checks stay bounded and preserve every failure."""
+"""Whole-library header checks use one Lean process and preserve every failure."""
 
 import json
 import os
@@ -12,7 +12,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 class LintStyleTests(unittest.TestCase):
-    def test_large_inventory_batches_every_file_and_retains_failures(self):
+    def test_large_inventory_checks_every_file_once_and_retains_failures(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             directory = root / "TauCeti" / ("LongModuleDirectory" * 6)
@@ -31,10 +31,14 @@ class LintStyleTests(unittest.TestCase):
                 "import json, os, sys\n"
                 "from pathlib import Path\n"
                 "args = sys.argv[1:]\n"
+                "headers = args[:3] == ['env', 'lean', '--run']\n"
+                "if headers:\n"
+                "    assert len(args) == 5\n"
+                "    paths = Path(args[4]).read_text().splitlines()\n"
                 "with open(os.environ['TEST_LINT_LOG'], 'a') as log:\n"
-                "    log.write(json.dumps(args) + '\\n')\n"
-                "if args[:3] == ['env', 'lean', '--run']:\n"
-                "    sys.exit(int(os.environ.get('TEST_LINT_FAIL') in args[4:]))\n"
+                "    log.write(json.dumps(paths if headers else args) + '\\n')\n"
+                "if headers:\n"
+                "    sys.exit(int(os.environ.get('TEST_LINT_FAIL') in paths))\n"
                 "imports = Path(os.environ['LEAN_SRC_PATH'].split(os.pathsep)[0]) / 'TauCetiLint/All.lean'\n"
                 "assert len(imports.read_text().splitlines()) == 20001\n"
                 "sys.exit(int(os.environ.get('TEST_STYLE_FAIL', '0')))\n"
@@ -60,9 +64,8 @@ class LintStyleTests(unittest.TestCase):
                     )
                     self.assertEqual(result.returncode, int(bool(failure) or style_failure), result.stderr)
                     calls = [json.loads(line) for line in log.read_text().splitlines()]
-                    headers = [args[4:] for args in calls if args[:3] == ["env", "lean", "--run"]]
-                    self.assertTrue(all(0 < len(batch) <= 128 for batch in headers))
-                    self.assertEqual([path for batch in headers for path in batch], files)
+                    self.assertEqual(len(calls), 2)
+                    self.assertEqual(calls[0], files)
                     self.assertEqual(calls[-1], ["exe", "lint-style", "--quiet", "TauCetiLint.All", "TauCeti"])
 
 

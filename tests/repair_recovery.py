@@ -986,6 +986,7 @@ class Fixture(unittest.TestCase):
         FakeVerification.failures = 1
         self.opts.ignore_quota = True
         with (
+            patch.object(rr, "report_runtime") as progress,
             patch("tauceti_worker.loop.resolve_work_model", return_value=("claude", False)) as admission,
             patch("tauceti_worker.work_units.raise_on_account_mismatch"),
             patch("tauceti_worker.agents.run_agent_host", side_effect=self.model_repair) as model,
@@ -999,6 +1000,19 @@ class Fixture(unittest.TestCase):
         self.assertEqual(self.journal()["continuation_reason"], "exact-source-verification-failed")
         self.assertEqual(self.journal()["content_attempts"], 1)
         self.assertEqual(self.values["fix-10-head"], 1)
+        phases = [call.kwargs.get("phase") for call in progress.call_args_list if call.kwargs.get("phase")]
+        self.assertEqual(phases, ["recovery-verify", "recovery-repair", "recovery-verify"])
+        self.assertTrue(
+            all(call.kwargs["target"] == "PR #10" for call in progress.call_args_list if "phase" in call.kwargs)
+        )
+
+    def test_recovery_explains_pending_provider_bootstrap(self):
+        FakeVerification.failures = 1
+        with patch("tauceti_worker.loop.resolve_work_model", return_value=("claude", True)):
+            self.assertFalse(self.run_recovery())
+        self.assertEqual(self.journal()["reason"]["code"], "provider-initialization")
+        self.assertIn("ordinary work can bootstrap", self.journal()["reason"]["detail"])
+        self.assertEqual(self.journal().get("content_attempts", 0), 0)
 
     def test_verification_failure_budget_refusal_retains_source(self):
         FakeVerification.failures = 1
@@ -3045,7 +3059,7 @@ class RealVerifierIntegration(unittest.TestCase):
         w = SimpleNamespace(cfg=cfg, rc=SimpleNamespace(deadline=__import__("time").time() + 60))
         backend = rr.WorkerBackend(w, SimpleNamespace())
         facts = dict(labels=[], ref="repair", head=case.base, repository="alice/repo")
-        manifest = dict(id="real-receipt", authorization={})
+        manifest = dict(id="real-receipt", authorization={}, pr=10)
         with patch("tauceti_worker.agents.warm_host_build_caches") as warm:
             first = backend.verify(case.root, manifest, facts)
             self.assertEqual(first["status"], "success", first.get("error"))

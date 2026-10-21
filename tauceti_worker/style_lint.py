@@ -1,4 +1,4 @@
-"""Run shared source style checks with bounded header batches."""
+"""Run shared source style checks without passing the file inventory through argv."""
 
 from __future__ import annotations
 
@@ -12,6 +12,26 @@ from tauceti_tools.project import active
 from tauceti_tools.templates import ASSETS, materialize
 
 from .constants import LEAN_ROOT
+
+
+def header_driver(source: Path, directory: Path, paths: list[str]) -> tuple[Path, Path]:
+    checker = source.read_text()
+    entry = "unsafe def main (args : List String) : IO UInt32 := do"
+    if checker.count(entry) != 1:
+        raise ValueError("lint-style: unsupported shared header checker entry point")
+    # Keep the shared checker intact; only its entry point reads a manifest so
+    # a large inventory needs neither an oversized argv nor repeated Lean startup.
+    driver = directory / "HeaderStyle.lean"
+    driver.write_text(
+        checker.replace(entry, entry.replace("main", "auditHeaders"))
+        + "\nunsafe def main (args : List String) : IO UInt32 := do\n"
+        + "  let [manifest] := args | return 1\n"
+        + '  let paths := (← IO.FS.readFile manifest).splitOn "\\n"\n'
+        + '  auditHeaders (paths.filter (· != ""))\n'
+    )
+    manifest = directory / "header-files.txt"
+    manifest.write_text("".join(f"{path}\n" for path in paths))
+    return driver, manifest
 
 
 def main(args=None):
@@ -48,12 +68,9 @@ def main(args=None):
         imports = directory / (module.replace(".", "/") + ".lean")
         imports.parent.mkdir(parents=True, exist_ok=True)
         imports.write_text("".join(f"import {name}\n" for name in [LEAN_ROOT, *names]))
-        failed = False
-        for start in range(0, len(paths), 128):
-            result = subprocess.run(
-                ["lake", "env", "lean", "--run", str(shared / "HeaderStyle.lean"), *paths[start : start + 128]]
-            )
-            failed |= result.returncode != 0
+        driver, manifest = header_driver(shared / "HeaderStyle.lean", directory, paths)
+        result = subprocess.run(["lake", "env", "lean", "--run", str(driver), str(manifest)])
+        failed = result.returncode != 0
         env = dict(
             os.environ,
             LEAN_SRC_PATH=str(directory)

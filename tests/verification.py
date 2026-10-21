@@ -469,6 +469,8 @@ print('imports timing 1ms; duplicates timing 2ms; axioms timing 3ms', flush=True
                     p.communicate(timeout=10)
 
     def test_shim_ratchet_and_one_json_result(self):
+        python = write(self.bin, "python3", "#!/bin/sh\necho wrong-interpreter >&2\nexit 97\n")
+        python.chmod(0o755)
         write(self.root, "TauCeti/mathlib-shims.json", "{}")
         git(self.root, "add", ".")
         git(self.root, "commit", "-qm", "registry")
@@ -476,7 +478,7 @@ print('imports timing 1ms; duplicates timing 2ms; axioms timing 3ms', flush=True
         write(
             self.root,
             "scripts/check-expired-mathlib-shims.py",
-            "import json, sys\nfrom pathlib import Path\nPath('.lake').mkdir(exist_ok=True)\nPath('.lake/shim-args').write_text(json.dumps(sys.argv[1:]))\n",
+            "import json, sys, tauceti_tools\nfrom pathlib import Path\nPath('.lake').mkdir(exist_ok=True)\nPath('.lake/shim-args').write_text(json.dumps(sys.argv[1:]))\n",
         )
         result = self.verify(stage="shim-expiry", base=base)
         self.assertEqual(result["status"], "success", result.get("error"))
@@ -486,6 +488,31 @@ print('imports timing 1ms; duplicates timing 2ms; axioms timing 3ms', flush=True
         write(self.root, "lean-toolchain", "pin change")
         self.verify(stage="shim-expiry", base=base)
         self.assertNotIn("--only-new", json.loads((self.root / ".lake/shim-args").read_text()))
+
+    def test_missing_worker_dependency_is_infrastructure_failure(self):
+        write(
+            self.root,
+            "scripts/check-expired-mathlib-shims.py",
+            "raise ModuleNotFoundError(\"No module named 'tauceti_tools'\")\n",
+        )
+        result = self.verify(stage="shim-expiry")
+        self.assertEqual(result["status"], "incomplete", result.get("error"))
+        self.assertEqual(result["incomplete_reason"], "tool-missing")
+
+    def test_shared_shim_wrapper_uses_worker_python_in_subprocess(self):
+        from tauceti_tools.templates import python_wrapper
+
+        python = write(self.bin, "python3", "#!/bin/sh\necho wrong-interpreter >&2\nexit 97\n")
+        python.chmod(0o755)
+        write(self.root, "scripts/check-expired-mathlib-shims.py", python_wrapper("check-expired-mathlib-shims.py"))
+        verifier = Verification(self.root, self.state)
+        verifier.directory.mkdir(parents=True)
+        verifier.receipt["scope"] = dict(merge_base=self.base)
+        commands = verifier.phase_commands("shim-expiry", None)
+        argv, env = commands[0]
+        result = subprocess.run([*argv[:2], "--help"], cwd=self.root, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--fail-on-available", result.stdout)
 
     def test_old_cleanup_markers_do_not_block_verification(self):
         markers = self.home / "activity/containment-unconfirmed"

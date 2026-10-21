@@ -25,9 +25,10 @@ A stage-only build or audit does not claim the skipped requested lint succeeded.
 All stages run the whole-library `lake build --iofail`, fast changed-file axiom diagnostics,
 module-system, source style lint, changed-module environment lint, and the shim ratchet.
 A stage-only call runs that stage; it does not assert that prerequisites or other stages passed.
-The worker runs source style checks with bounded header-check batches and a complete
+The worker runs source style checks with one manifest-fed header check and a complete
 import root, using the discovery and checker code from its pinned TauCetiTools package.
 Environment lint uses that package directly.
+Python checks use the worker's interpreter so its installed dependencies are available.
 The worker and shared package contents are verification inputs, so changes invalidate
 old receipts and changes during verification make the result incomplete.
 The shim checker receives merge-base source and registry snapshots, strict `--fail-on-available`,
