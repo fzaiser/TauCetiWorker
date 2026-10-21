@@ -315,12 +315,20 @@ Original sandbox requirements remain in force: this host recovery path cannot
 weaken an explicitly selected sandbox. Ordinary owned-process-group cleanup
 and configured timeouts remain the runner's responsibility.
 
+Recovery honors `--ignore-quota` for soft pacing while retaining fresh checks
+for expired credentials, exhausted quota and unavailable usage data.
+A deferred recovery logs its PR, reason code and explanation.
+Recovery-only probes do not increase the ordinary no-progress backoff;
+the loop checks ordinary PR work next, subject to normal provider admission.
+
 Verification uses the installed `tauceti verify` implementation and exact-input
 receipts. Committed paths, blob bytes, symlink targets and executable bits are
 checked against the verified inventory before CAS publication. Undeclared
 scratch files remain archived outside the publication checkout. New source from
 an interrupted continuation is checkpointed with source-integrity checks. Full
 verification remains required; recovery adds no push-red permission.
+An operating-system argument-size failure is incomplete verification, not a
+source defect to send to a paid continuation.
 
 A crash after push reconciles actual remote state before replay. A confirmed
 push subsequently removed by another writer is archived. A moved head that no

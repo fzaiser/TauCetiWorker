@@ -159,6 +159,13 @@ print('imports timing 1ms; duplicates timing 2ms; axioms timing 3ms', flush=True
         self.environ = patch.dict(os.environ, self.env, clear=True)
         self.environ.start()
         self.addCleanup(self.environ.stop)
+        self.lint_commands = patch.object(
+            Verification,
+            "lint_command",
+            lambda verifier, name, env: (["bash", "-o", "pipefail", f"scripts/{name}"], env),
+        )
+        self.lint_commands.start()
+        self.addCleanup(self.lint_commands.stop)
 
     def verify(self, **kwargs):
         with contextlib.redirect_stderr(io.StringIO()):
@@ -254,6 +261,40 @@ print('imports timing 1ms; duplicates timing 2ms; axioms timing 3ms', flush=True
         result = self.verify(stage="lint")
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["commands"][-1]["exit"], 1)
+
+    def test_argument_limit_is_infrastructure_not_a_source_failure(self):
+        write(self.root, "scripts/lint-style.sh", "echo 'lake: Argument list too long' >&2\nexit 1\n")
+        result = self.verify(stage="lint")
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(result["incomplete_reason"], "argument-limit")
+        self.assertIn("must batch its arguments", result["error"])
+        self.assertIn(result["commands"][-1]["log"], result["error"])
+
+    def test_installed_style_linter_bypasses_pinned_checkout_wrapper(self):
+        self.lint_commands.stop()
+        write(self.root, "scripts/lint-style.sh", "echo 'obsolete pinned wrapper' >&2\nexit 97\n")
+        (self.root / ".lake").mkdir(exist_ok=True)
+        verifier = Verification(self.root, self.state)
+        argv, env = verifier.lint_command("lint-style.sh", os.environ)
+        result = subprocess.run(argv, cwd=self.root, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("HeaderStyle.lean", "\n".join(self.calls()))
+        self.assertIn("exe lint-style", "\n".join(self.calls()))
+
+    def test_shared_tool_changes_invalidate_receipts(self):
+        import tauceti_tools
+
+        package = self.home / "shared-tools"
+        init = write(package, "__init__.py", "")
+        script = write(package, "assets/scripts/lint-style.sh", "original\n")
+        with patch.object(tauceti_tools, "__file__", str(init)):
+            first = self.verify(stage="build")
+            self.assertEqual(first["status"], "success")
+            script.write_text("updated\n")
+            second = self.verify(stage="build")
+        self.assertEqual(second["status"], "success")
+        self.assertNotEqual(first["fingerprint"], second["fingerprint"])
+        self.assertNotIn("reused_from", second["phases"]["build"])
 
     def test_local_axioms_never_initialize_lake_or_fall_back_to_full(self):
         write(self.root, "TauCeti/A.lean", "changed")

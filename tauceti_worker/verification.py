@@ -471,6 +471,12 @@ class Verification:
                     print(tail, file=sys.stderr, end="", flush=True)
         self.progress(f"{phase}: exit {entry['exit']}")
         if entry["exit"]:
+            if "Argument list too long" in text:
+                raise Incomplete(
+                    f"{phase}: command exceeded the operating system's argument-size limit; "
+                    f"the tool must batch its arguments (see {log})",
+                    reason="argument-limit",
+                )
             raise subprocess.CalledProcessError(entry["exit"], argv, output=text)
         return (captured_text if capture else text).strip()
 
@@ -521,6 +527,8 @@ class Verification:
             self.at_boundary = False
 
     def inputs(self):
+        import tauceti_tools
+
         self.check_deadline()
         toolchain = {}
         for name in ("lake", "lean", "bash", "python3", "git", "tar"):
@@ -562,6 +570,7 @@ class Verification:
             sources=sources,
             root=str(self.root),
             dependencies=dependencies,
+            shared_tools=self.installations.inventory(Path(tauceti_tools.__file__).parent),
             base=self.base,
             scope=scope(self.root, self.base, self.policy),
             configuration=file_record(Path(config)) if config else None,
@@ -573,6 +582,14 @@ class Verification:
             python=dict(version=sys.version, executable=file_record(Path(sys.executable))),
             lint_modules=file_record(Path(self.lint_modules)) if self.lint_modules else None,
         )
+
+    def lint_command(self, name, env):
+        if name == "lint-style.sh":
+            return [sys.executable, "-m", "tauceti_worker.style_lint"], dict(env)
+        from tauceti_tools.templates import ASSETS
+
+        env = dict(env, TAUCETI_PROJECT_ROOT=str(self.root), TAUCETI_TRUSTED_SCRIPTS=str(ASSETS / "scripts"))
+        return [sys.executable, "-m", "tauceti_tools", "script", name], env
 
     def phase_commands(self, phase, modules):
         env = dict(os.environ)
@@ -605,7 +622,7 @@ class Verification:
         if phase == "lint":
             if selected["mode"] == "unknown":
                 raise Incomplete("lint: changed modules unknown; CI owns the full environment lint")
-            commands = [(["bash", "-o", "pipefail", "scripts/lint-style.sh"], env)]
+            commands = [self.lint_command("lint-style.sh", env)]
             lint_list = self.directory / "lint-modules.txt"
             lint_modules = set(selected["modules"])
             if self.lint_modules:
@@ -622,7 +639,7 @@ class Verification:
             lint_list.write_text("".join(f"{m}\n" for m in sorted(lint_modules)))
             if lint_modules:
                 env["LINT_ONLY_MODULES"] = str(lint_list)
-                commands.append((["bash", "-o", "pipefail", "scripts/lint-env.sh"], env))
+                commands.append(self.lint_command("lint-env.sh", env))
             return commands
         if phase == "shim-expiry":
             script = self.root / "scripts/check-expired-mathlib-shims.py"
@@ -766,7 +783,8 @@ class Verification:
 
                 preserve_candidate(self, disposable_only=True)
                 self.receipt["phases"]["lint"] = dict(status="incomplete", started_at=time.time(), ended_at=None)
-                self.command("lint", ["bash", "-o", "pipefail", "scripts/lint-style.sh"], env=dict(os.environ))
+                argv, env = self.lint_command("lint-style.sh", os.environ)
+                self.command("lint", argv, env=env)
             for phase in self.requested:
                 self.watch()
                 reused = self.find_reuse(fingerprint, phase) if self.reuse else None
@@ -786,7 +804,7 @@ class Verification:
                 self.receipt["phases"][phase] = record
                 self.save()
                 for argv, env in self.phase_commands(phase, modules):
-                    if early_style and phase == "lint" and "scripts/lint-style.sh" in argv:
+                    if early_style and phase == "lint" and argv == self.lint_command("lint-style.sh", os.environ)[0]:
                         continue
                     try:
                         self.command(phase, argv, env=env)

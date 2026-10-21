@@ -334,6 +334,7 @@ class Recovery:
                 and j.get("failed_recheck_at", 0) > time.time()
                 and (prior_checkout / ".git").exists()
                 and saved.inspect(prior_checkout).fingerprint == j["failed_source"]
+                and b.verification_fingerprint(prior_checkout, m, facts) == j.get("failed_fingerprint")
             ):
                 # A known failed source needs reasoning. Admission waits must not
                 # warm caches or repeat the same expensive failed build each time.
@@ -437,6 +438,8 @@ class Recovery:
                 selection=selected,
                 reservation_until=j.get("reservation_until") or time.time() + RESERVATION_SECONDS,
             )
+            target = f"PR #{m['pr']}" if m and m.get("pr") else self.record.name
+            log(f"recovery {target}: {error.code} — {error.detail}")
             return False
         except Exception as error:
             self.discard_unstarted_publication()
@@ -1252,7 +1255,7 @@ class WorkerBackend:
                     self.w.cfg,
                     profile.provider,
                     dry=False,
-                    ignore_quota=False,
+                    ignore_quota=self.opts.ignore_quota,
                     quota_cmd=None,
                     fresh=True,
                 )

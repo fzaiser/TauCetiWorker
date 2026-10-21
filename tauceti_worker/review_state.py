@@ -139,14 +139,14 @@ class ReviewState:
         from .survey_facts import blocked
 
         facts = self._survey_facts.get(pr)
-        if facts is not None:
-            # Older materializations contain no blocker markers. New comments
-            # update this additive projection without a history backfill.
-            rows = facts.get("blocked", [])
+        if facts is not None and "blocked" in facts:
+            rows = facts["blocked"]
         else:
             cached = self._comments.get(pr)
             comments = cached[1] if cached else None
-            if selected and not os.environ.get("TAUCETI_GITHUB_STATE_URL"):
+            # Compact surveys may omit worker-specific blockers. Check the
+            # selected PR's comments before allowing maintenance to start.
+            if selected:
                 comments = self._issue_comments(pr)
             rows = blocked(comments)
         return any(

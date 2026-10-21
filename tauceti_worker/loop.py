@@ -210,6 +210,8 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
                 failure_log=None,
                 failure_scope=None,
                 round_log=None,
+                recovery_reason=None,
+                recovery_record=None,
             )
             # 1) Decide the model and whether to run this cycle. `pending_init` means Claude was picked
             # while a window of it is reset-but-unopened: the round is authorized to spend ONE small
@@ -391,6 +393,14 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
             elapsed = time.time() - started
             failed = runtime_snapshot()
             published = failed.get("failure_reason")
+            recovery_wait = recovery_only and rc == EX_NOPROGRESS
+            if recovery_wait and not published:
+                deferred = failed.get("recovery_reason") or {}
+                published = (
+                    f"recovery deferred [{deferred.get('code', 'waiting')}]: {deferred['detail']}"
+                    if deferred.get("detail")
+                    else "recovery deferred; no saved work was ready to resume"
+                )
             reason = (
                 str(published)
                 if published
@@ -401,6 +411,13 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
                 log("stopped after the round finished")
                 final_detail = "stopped by Ctrl-C once the round had finished"
                 return 0
+
+            if recovery_wait:
+                # A recovery probe says nothing about the ordinary PR backlog. Escalating
+                # its backoff past the probe interval would select recovery on every wakeup.
+                log("recovery deferred; checking ordinary PR work next")
+                report_runtime("idle", detail=reason, next_action_at=time.time())
+                continue
 
             if rc == EX_DOCUMENTATION_WAIT:
                 streak = 0

@@ -993,7 +993,7 @@ class Fixture(unittest.TestCase):
             self.assertTrue(self.run_recovery())
         admission.assert_called_once()
         self.assertTrue(admission.call_args.kwargs["fresh"])
-        self.assertFalse(admission.call_args.kwargs["ignore_quota"])
+        self.assertTrue(admission.call_args.kwargs["ignore_quota"])
         model.assert_called_once()
         self.assertEqual(FakeVerification.calls, 2)
         self.assertEqual(self.journal()["continuation_reason"], "exact-source-verification-failed")
@@ -1007,6 +1007,92 @@ class Fixture(unittest.TestCase):
         self.assertEqual(self.journal()["reason"]["code"], "budget-refused")
         self.assertEqual(self.journal()["attempts"], 0)
         self.assert_retained()
+
+    def test_recovery_pacing_override_preserves_hard_blocks_and_logs_the_reason(self):
+        from tauceti_worker import loop
+        from tauceti_worker.quota import Provider
+
+        FakeVerification.failures = 1
+        self.opts.ignore_quota = True
+        with (
+            patch.object(
+                loop, "choose_model", return_value=(None, {"claude": Provider("claude", False, None, error="HTTP 401")})
+            ),
+            patch.object(rr, "log") as messages,
+        ):
+            self.assertFalse(self.run_recovery())
+        self.assertEqual(self.journal()["reason"]["code"], "budget-refused")
+        self.assertTrue(
+            any(
+                "PR #10: budget-refused" in call.args[0] and "HTTP 401" in call.args[0]
+                for call in messages.call_args_list
+            )
+        )
+        self.assertEqual(self.journal().get("content_attempts", 0), 0)
+        self.assertEqual(self.values.get("fix-10-head", 0), 0)
+        self.assert_retained()
+
+    def test_changed_verifier_rechecks_before_requesting_a_model(self):
+        FakeVerification.failures = 1
+        with patch("tauceti_worker.loop.resolve_work_model", side_effect=RuntimeError("budget closed")):
+            self.assertFalse(self.run_recovery())
+        self.retry_now()
+        with (
+            patch.object(self.backend, "verification_fingerprint", return_value="changed-verifier"),
+            patch.object(
+                self.backend, "verify", return_value={"status": "incomplete", "error": "tool must batch arguments"}
+            ),
+            patch.object(
+                self.backend, "continuation_admission", side_effect=AssertionError("Infrastructure needs no model")
+            ),
+        ):
+            self.assertFalse(self.run_recovery())
+        self.assertEqual(self.journal()["reason"]["code"], "invocation-failed")
+        self.assertIn("tool must batch arguments", self.journal()["reason"]["detail"])
+        self.assertEqual(self.journal().get("content_attempts", 0), 0)
+
+    def test_recovery_wait_does_not_starve_normal_work_or_inflate_backoff(self):
+        from tauceti_worker import loop
+        from tauceti_worker.constants import EX_NOPROGRESS
+        from tauceti_worker.runtime_status import report_runtime
+
+        tails, naps, outcomes = [], [], []
+        clock = [1000.0]
+
+        def sleep(seconds):
+            naps.append(seconds)
+            clock[0] += seconds
+
+        def run(tail):
+            tails.append(tail)
+            if len(tails) == 4:
+                raise KeyboardInterrupt
+            if "--recovery-only" in tail:
+                report_runtime(recovery_reason={"code": "budget-refused", "detail": "weekly pacing blocks recovery"})
+            else:
+                # Ordinary work can take longer than the recovery probe interval.
+                clock[0] += 901
+            return EX_NOPROGRESS
+
+        with (
+            patch.object(rr, "due", return_value=True),
+            patch.object(loop, "time", SimpleNamespace(time=lambda: clock[0], sleep=sleep)),
+            patch.object(loop, "api_mode", return_value=False),
+            patch.object(loop, "choose_model", return_value=("claude", {})),
+            patch.object(loop, "fleet_admission_reason", return_value=None),
+            patch.object(loop, "github_budget", return_value={}),
+            patch.object(loop, "run_round_subprocess", run),
+            patch.object(
+                loop, "_round_outcome", side_effect=lambda rc, status, reason, elapsed: outcomes.append(reason)
+            ),
+        ):
+            args = SimpleNamespace(ignore_quota=False, bubble=False, quota_cmd=None)
+            self.assertEqual(loop.cmd_loop(args, self.cfg, only=["fix"], agent="claude"), 130)
+        self.assertEqual(["--recovery-only" in tail for tail in tails], [True, False, True, False])
+        self.assertEqual(naps, [60], "only the ordinary no-progress round should increase backoff")
+        self.assertIn("budget-refused", outcomes[0])
+        self.assertIn("weekly pacing blocks recovery", outcomes[0])
+        self.assertNotIn("budget-refused", outcomes[1], "a prior recovery reason must not leak into ordinary work")
 
     def test_identity_profile_mismatch_new_narrow_conversation(self):
         FakeVerification.failures = 1

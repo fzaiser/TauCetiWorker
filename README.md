@@ -80,6 +80,10 @@ round at once. From a clone you can run `./tauceti`
 instead, a small PEP 723 `uv` shim that runs the same package; every command
 below works either way, and this README writes the installed form.
 
+Run `uv sync` for a source development environment, or `uv tool install --editable .`
+to use the checkout through the installed `tauceti` command.
+Both use the pinned TauCetiTools dependency; no sibling checkout is required.
+
 Local checks use [concurrent verification with exact-input receipts](docs/verification.md).
 
 ### Multiple GitHub accounts
