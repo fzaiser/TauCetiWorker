@@ -15,6 +15,7 @@ from .github import GitHub
 from .paths import entry_cmd
 from .quota import Quota, _read_json_file, quota_line
 from .review_state import ReviewState
+from .roadmap_scope import roadmap_selection
 from .survey import Candidate, Counters, Survey, survey
 from .worker_manager import (
     WorkersError,
@@ -83,7 +84,7 @@ def _expansion_rows(sv: Survey, name: str, titles: dict, areas: list | None) -> 
         # In "auto" mode no area is pinned (a random one is picked per round), so no row is marked
         # "← only" — the intended display.
         for a in ["(all areas)"] + list(areas):
-            active = a == sv.roadmap_only or (a == "(all areas)" and sv.roadmap_only in ("", "any"))
+            active = a in roadmap_selection(sv.roadmap_only) or (a == "(all areas)" and sv.roadmap_only in ("", "any"))
             tag = "← only" if active else ("(skipped)" if a in skip else "")
             rows.append((f"    └ {a}", tag))
         return rows
@@ -773,7 +774,7 @@ def _dashboard_app(cfg, loader=None):
                     if val is not None:
                         self._apply_only(val.strip())
 
-                self.push_screen(TextPrompt("roadmap only — single area (blank = all areas)", cur), done)
+                self.push_screen(TextPrompt("roadmap only — comma-separated areas (blank = all areas)", cur), done)
 
         def _apply_skip(self, value: str) -> None:
             # Normalize through the same parse roadmap_skip() uses, so the env carries a canonical list.

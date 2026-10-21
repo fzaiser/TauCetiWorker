@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 from . import console
 from .constants import MAX_OPEN_PRS, ROADMAP, ROADMAP_DIR, TAUCETI
 from .paths import HERE, RUNTIME_ROOT
+from .roadmap_scope import roadmap_selection
 
 _SCP_GIT_URL_RE = re.compile(r"^[^/@\s]+@[^:\s]+:.+$")
 
@@ -46,13 +47,14 @@ def is_git_url(value: str) -> bool:
 
 
 def roadmap_only() -> str | None:
-    """The single roadmap area the worker steers toward, as the operator set it — read live from the
+    """The comma-separated roadmap areas the worker steers toward — read live from the
     env each call so the TUI's [o] key can change it and have both the survey display and any launched
     round pick it up (children inherit TAUCETI_ROADMAP_ONLY). Tri-state: None = unset, so a fresh
-    random area is picked before each work survey; "" = all areas; else the area name. There is
+    random area is picked after maintenance; "" = all areas; else the selected area names. There is
     deliberately no baked-in default, and nothing here consults the dashboard prefs — a bare CLI run
     resolves only from the env + the live area list, never from a saved dashboard preference."""
-    return os.environ.get("TAUCETI_ROADMAP_ONLY")
+    value = os.environ.get("TAUCETI_ROADMAP_ONLY")
+    return None if value is None else ",".join(roadmap_selection(value))
 
 
 def roadmap_skip() -> list[str]:
@@ -111,6 +113,35 @@ def roadmap_areas(gh) -> list[str]:
         pass
     out = gh.api_jq(f"repos/{ROADMAP}/contents/{ROADMAP_DIR}", '.[] | select(.type=="dir") | .name')
     return sorted(out.splitlines()) if out else []
+
+
+def validate_roadmap_scope(gh) -> None:
+    """Reject unknown explicit areas before starting work or reserving a worker slot."""
+    selected = roadmap_selection(roadmap_only())
+    if len(selected) == 1 and selected[0] in ("any", "auto"):
+        selected = ()
+    elif set(selected) & {"any", "auto"}:
+        raise Die("--roadmap-only: 'any' and 'auto' must be used alone, not in an area list")
+    skipped = roadmap_skip()
+    if not selected and not skipped:
+        return
+    unavailable = f"cannot validate roadmap areas: could not load the area list from {ROADMAP}/{ROADMAP_DIR}"
+    try:
+        available = roadmap_areas(gh)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise Die(f"{unavailable}: {error}") from None
+    if not available:
+        raise Die(unavailable)
+    unknown = [
+        f"{flag}: {', '.join(missing)}"
+        for flag, areas in (("--roadmap-only", selected), ("--roadmap-skip", skipped))
+        if (missing := [area for area in areas if area not in available])
+    ]
+    if unknown:
+        raise Die(
+            f"unknown roadmap area(s) ({'; '.join(unknown)}). "
+            f"Names are case-sensitive. Available areas: {', '.join(available)}"
+        )
 
 
 def sanitize_wid(raw: str) -> str:

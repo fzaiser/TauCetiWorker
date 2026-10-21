@@ -117,6 +117,17 @@ for gateway in (False, True):
     assert picked[0][:2] == ("rebase", 1), "automatic mode must preserve maintenance priority"
     picked = run(gateway=gateway, only=["fix", "roadmap"], env={"TAUCETI_ROADMAP_ONLY": "Topology"})
     assert picked[0][:2] == ("fix", 3) and picked[0][3:] == (1, "Topology")
+    for stage, number in (("rebase", 1), ("fix-ci", 2), ("fix", 3)):
+        picked = run(
+            gateway=gateway,
+            only=[stage, "roadmap"],
+            env={
+                "TAUCETI_ROADMAP_ONLY": " Geometry, PDE,Topology,Geometry, ",
+                "TAUCETI_ROADMAP_SKIP": "Geometry,PDE,Topology",
+            },
+        )
+        assert picked[0][:2] == (stage, number), (gateway, picked)
+        assert picked[0][3:] == (3, "Geometry,PDE,Topology"), "count the union and let explicit areas override skips"
     picked = run(
         gateway=gateway,
         only=["rebase", "fix-ci", "fix", "roadmap"],

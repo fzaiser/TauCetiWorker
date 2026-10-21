@@ -408,10 +408,12 @@ tauceti work --loop --skip roadmap    # everything except authoring new PRs
 Roadmap rounds steer toward one area, a subdirectory of the
 [roadmap](https://github.com/TauCetiProject/TauCetiRoadmap):
 
-- `--roadmap-only <area>` pins it. An empty value means all areas. With nothing
-  set, existing work is considered across all eligible areas before authoring
-  picks a fresh random area, so an unpinned `--loop` roams the whole roadmap
-  over time.
+- `--roadmap-only <area>[,<area>...]` selects one or more areas. Existing PR
+  work and the open-PR limit cover the whole selection; each authoring round
+  randomly picks one selected area. An empty value means all areas. With
+  nothing set, existing work is considered across all eligible areas before
+  authoring picks a fresh random area. Unknown names in `--roadmap-only` or
+  `--roadmap-skip` stop the worker with an error before work starts.
 - `--roadmap-skip <area>[,<area>...]` excludes areas from both the random pick
   and the all-areas case. `--roadmap-only` wins on overlap.
 - `--source <path-or-url>` adapts compatible material from an existing repository,
@@ -420,6 +422,7 @@ Roadmap rounds steer toward one area, a subdirectory of the
   and only then migration of the source.
 
 ```bash
+tauceti work --loop --roadmap-only GraphConnectivityAndFlows,StandardDistributions --skip review
 tauceti work --only roadmap --roadmap-only Topology --source ../existing-library
 ```
 

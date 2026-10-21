@@ -152,6 +152,37 @@ for bad in ({"contest": "invalid"}, {"markers": [None]}, {"pr": {"number": 1, "l
         assert read_survey("org/repo") == (False, None), "malformed snapshots must fall back"
 
 
+def compact_row(number):
+    return {
+        "contract": CONTRACT,
+        "pr": pr(number),
+        "review": {**summarize([], []), "issue_complete": True, "review_complete": True},
+    }
+
+
+def area_response(repo, operation, **args):
+    numbers = {"PDE": [1, 2], "Topology": [2, 3]}[args["roadmap"]]
+    return True, {"contract": CONTRACT, "data": [compact_row(n) for n in numbers]}
+
+
+with patch("tauceti_worker.github_state.read", side_effect=area_response) as reader:
+    available, rows = read_survey("org/repo", " PDE,Topology,PDE, ", ["PDE"], stages=["fix"])
+    assert available and [row["pr"]["number"] for row in rows] == [1, 2, 3]
+    assert [call.kwargs["roadmap"] for call in reader.call_args_list] == ["PDE", "Topology"]
+    assert all(call.kwargs["skip"] == "PDE" and call.kwargs["stages"] == "fix" for call in reader.call_args_list)
+
+with patch(
+    "tauceti_worker.github_state.read",
+    side_effect=[(True, {"contract": CONTRACT, "data": [compact_row(1)]}), (False, None)],
+):
+    assert read_survey("org/repo", "PDE,Topology") == (False, None), "one failed area invalidates the whole union"
+
+with patch("tauceti_worker.github_state.read", return_value=(True, {"contract": CONTRACT, "data": []})) as reader:
+    assert read_survey("org/repo", "PDE,Topology", numbers=[9]) == (True, [])
+    assert reader.call_count == 1 and reader.call_args.kwargs["roadmap"] == "any"
+    assert reader.call_args.kwargs["numbers"] == "9", "explicit targets bypass area fan-out"
+
+
 class Response(io.BytesIO):
     def __init__(self, payload):
         super().__init__(json.dumps(payload).encode())

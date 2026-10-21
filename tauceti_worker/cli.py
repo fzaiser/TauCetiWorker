@@ -95,6 +95,7 @@ from .quota import (
 )
 from .review_engine import engine_selfcheck
 from .review_state import ReviewState
+from .roadmap_scope import roadmap_selection
 from .round import Claims, RoundContext, cmd_heartbeat
 from .runtime_status import report_failure, report_runtime
 from .survey import Counters, survey
@@ -306,10 +307,11 @@ def add_work_flags(p: argparse.ArgumentParser) -> None:
         "--roadmap-only",
         dest="roadmap_only",
         default=None,
-        metavar="AREA",
-        help="for roadmap rounds, the single roadmap area to steer toward: a subdirectory of "
-        "the TauCetiRoadmap repo. List them by opening the dashboard (bare `tauceti`) and "
-        "expanding the roadmap row, or browse github.com/TauCetiProject/TauCetiRoadmap. "
+        metavar="AREA[,AREA...]",
+        help="roadmap areas to maintain and author in, comma-separated: subdirectories of "
+        "the TauCetiRoadmap repo. Unknown areas are an error. Existing PR work spans the selected "
+        "areas; authoring picks one at random each round. Open the dashboard (bare `tauceti`) and "
+        "expand the roadmap row to list them, or browse github.com/TauCetiProject/TauCetiRoadmap. "
         "Empty string = all areas; omit entirely (and leave $TAUCETI_ROADMAP_ONLY "
         "unset) to pick a fresh random area each round. Overrides "
         "$TAUCETI_ROADMAP_ONLY for this run",
@@ -562,7 +564,7 @@ def resolve_source(args, only: list[str]) -> str | None:
     if only and "roadmap" not in only:
         raise SystemExit("--source requires the 'roadmap' phase to be enabled")
     area = roadmap_only()
-    if area is None or area.strip().lower() in ("", "any", "auto"):
+    if len(roadmap_selection(area)) != 1 or area.strip().lower() in ("", "any", "auto"):
         raise SystemExit("--source requires a single roadmap area (use --roadmap-only AREA)")
     if not raw.strip():
         raise SystemExit("--source value must not be empty")
@@ -1243,6 +1245,14 @@ def cmd_status(args) -> int:
 
 
 def cmd_work(args, *, only: list[str], agent: str, one_round: bool, prs: tuple[int, ...] = ()) -> int:
+    from .config import validate_roadmap_scope
+
+    # CLI overrides persist in loop children through the environment.
+    if getattr(args, "roadmap_only", None) is not None:
+        os.environ["TAUCETI_ROADMAP_ONLY"] = args.roadmap_only
+    if getattr(args, "roadmap_skip", None) is not None:
+        os.environ["TAUCETI_ROADMAP_SKIP"] = args.roadmap_skip
+    validate_roadmap_scope(GitHub())
     if "security-audit" in only:
         from .security_audit import require_admin
 
@@ -1284,17 +1294,9 @@ def cmd_work(args, *, only: list[str], agent: str, one_round: bool, prs: tuple[i
         raise Die("--author-model/--author-effort require an explicit --agent; auto may choose another provider")
     if author_effort and agent in OPENROUTER_MODELS:
         raise Die(f"--author-effort is not supported for the OpenRouter provider {agent!r}")
-    # --roadmap-only overrides the env for this run (and is inherited by loop children, which read it
-    # live via roadmap_only()). Empty string is a meaningful value: "all areas".
-    if getattr(args, "roadmap_only", None) is not None:
-        os.environ["TAUCETI_ROADMAP_ONLY"] = args.roadmap_only
     source = resolve_source(args, only)
     if source is not None:
         args.source = source
-    # --roadmap-skip likewise overrides the env and is inherited by loop children (read live via
-    # roadmap_skip()).
-    if getattr(args, "roadmap_skip", None) is not None:
-        os.environ["TAUCETI_ROADMAP_SKIP"] = args.roadmap_skip
     # --roadmap-extra-identities and --ignore-claims override the env and are inherited by loop
     # children (read live via roadmap_extra_identities() / respect_claims()).
     if getattr(args, "roadmap_extra_identities", None) is not None:

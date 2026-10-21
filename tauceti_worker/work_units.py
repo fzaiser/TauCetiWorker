@@ -95,6 +95,7 @@ from .review_diagnostics import (
 )
 from .review_engine import engine_argv
 from .review_state import ReviewState
+from .roadmap_scope import roadmap_selection
 from .round import Claims, RoundContext
 from .runtime_status import atomic_json, read_json, report_failure, report_runtime, runtime_snapshot
 from .survey import (
@@ -2631,7 +2632,12 @@ def stage_rubrics(review_dir: Path, out_dir: Path) -> Path | None:
 def do_roadmap(w, sv, c, opts, bubble) -> int:
     os.environ["TAUCETI_VERIFY_POLICY"] = "ordinary"
     only = c.reason or "any"
-    skip = roadmap_skip()
+    selected = roadmap_selection(only)
+    only = selected[0] if len(selected) == 1 else only
+    if len(selected) > 1:
+        only = random.choice(selected)
+        log(f"→ ROADMAP area: {only} (selected from {', '.join(selected)})")
+    skip = [area for area in roadmap_skip() if len(selected) < 2 or area not in selected]
     if only == "auto":  # no area pinned: pick a fresh random area this round (per-round, in-child)
         raw_areas = roadmap_areas(w.gh)
         areas = [a for a in raw_areas if a not in skip]

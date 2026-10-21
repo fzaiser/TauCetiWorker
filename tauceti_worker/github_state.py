@@ -24,6 +24,7 @@ from pathlib import Path
 
 from . import github_transport as transport
 from .paths import ensure_ssl_cert_file
+from .roadmap_scope import roadmap_selection
 
 
 class StateQueryError(ValueError):
@@ -483,10 +484,21 @@ class SurveyRows(list):
 def read_survey(repo, roadmap="any", skip=(), *, numbers=(), stages=None):
     from .survey_facts import CONTRACT
 
+    areas = roadmap_selection(roadmap)
+    if len(areas) > 1 and not numbers:
+        # The service accepts one area per query. Never treat a partial union as a complete survey.
+        combined = {}
+        for area in areas:
+            available, rows = read_survey(repo, area, skip, stages=stages)
+            if not available:
+                return False, None
+            combined.update((row["pr"]["number"], row) for row in rows)
+        return True, SurveyRows(list(combined.values()), None)
+
     available, result = read(
         repo,
         "survey",
-        roadmap=roadmap,
+        roadmap="any" if numbers else (areas[0] if areas else "any"),
         skip=",".join(skip),
         numbers=",".join(map(str, numbers)),
         stages=",".join(stages if stages is not None else ("review", "fix", "rebase")),

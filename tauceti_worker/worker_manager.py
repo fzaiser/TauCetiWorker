@@ -34,6 +34,7 @@ from .constants import AGENTS, ALLOWED_TASKS, EXPLICIT_TASKS, MAX_OPEN_PRS
 from .github import unselected_github_env, validate_github_account
 from .paths import HERE, ensure_ssl_cert_file, entry_cmd, self_argv, self_env
 from .quota import parse_pace_curve
+from .roadmap_scope import roadmap_selection
 from .round import signal_group
 from .runtime_status import STATUS_ENV, StatusPublisher, read_json
 from .runtime_status import update_status as update_status
@@ -352,8 +353,14 @@ class WorkerSpec:
                 validate_github_account(spec.github_account)
             except ValueError as e:
                 raise WorkersError(f"workers[{index}].github_account: {e}") from None
-        if spec.source is not None and ("roadmap" not in spec.only or not spec.roadmap_only):
-            raise WorkersError(f"workers[{index}].source requires only to include roadmap and a non-empty roadmap_only")
+        if spec.source is not None and (
+            "roadmap" not in spec.only
+            or len(roadmap_selection(spec.roadmap_only)) != 1
+            or roadmap_selection(spec.roadmap_only)[0].lower() in ("any", "auto")
+        ):
+            raise WorkersError(
+                f"workers[{index}].source requires only to include roadmap and a single concrete roadmap_only"
+            )
         if (spec.author_model or spec.author_effort) and spec.agent == "auto":
             raise WorkersError(f"workers[{index}] author_model/author_effort require an explicit agent")
         if spec.claude_billing not in ("subscription", "api"):
@@ -1935,7 +1942,7 @@ def add_workers_parser(subparsers) -> None:
         "human runs `claude`. Only safe when nothing else uses the same credential file "
         "(see `tauceti work --help`)",
     )
-    add.add_argument("--roadmap-only", help="pin roadmap rounds to one area")
+    add.add_argument("--roadmap-only", help="limit maintenance and authoring to comma-separated roadmap areas")
     add.add_argument("--roadmap-skip", default="", help="comma-separated roadmap areas to exclude")
     add.add_argument("--source", help="source repository; requires roadmap in --only and one pinned roadmap area")
     add.add_argument("--author-model", help="exact authoring model; needs an explicit --agent")

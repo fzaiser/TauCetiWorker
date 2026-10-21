@@ -21,7 +21,7 @@ list is in `tauceti work -h`. For persistent workers, see
 | `--host` | Deprecated no-op: the host is now the default. It only warns; pass `--bubble` for the sandbox. |
 | `--stream` | Stream the agent's log to the terminal instead of a file under `logs/`. |
 | `-v`, `--verbose` | Show detail lines (per-PR skips, log paths, output tails) on an interactive terminal; the log file always has them. |
-| `--roadmap-only AREA` | The single roadmap area for roadmap rounds (empty = all areas). |
+| `--roadmap-only AREA[,AREA...]` | Maintain PRs across the selected areas and choose one at random for each authoring round (empty = all areas). Unknown areas are an error. |
 | `--roadmap-skip AREA[,AREA...]` | Roadmap areas to exclude from selection (`--roadmap-only` wins on overlap). |
 | `--source PATH_OR_URL` | Supplementary local Git repository directory or Git repository URL (checked-out/default `HEAD`) for authoring a PR. A shallow snapshot is stored in worker state, refreshed on later rounds, and mounted read-only in Bubble mode. Requires the roadmap phase to be enabled and one specific `--roadmap-only AREA`; other enabled phases ignore it, and the roadmap and review quality remain authoritative. |
 | `--roadmap-extra-identities LOGIN[,LOGIN...]` | Extra GitHub logins, beyond your `gh auth` identity, whose claimed intentions the worker treats as its own (won't avoid). |
@@ -386,7 +386,7 @@ Flags win over these. Most are tuning knobs with sane defaults.
 | `TAUCETI_VERBOSE` | _(unset)_ | `1` is `--verbose`. |
 | `TAUCETI_PLAIN_LOG` | _(unset)_ | `1` keeps the plain `date time tauceti: message` form on an interactive terminal too. |
 | `TAUCETI_FORK` | auto-created | Point at an existing fork instead of the one the worker creates. |
-| `TAUCETI_ROADMAP_ONLY` | _(unset)_ | The single roadmap area for `--roadmap-only`. Unset = a fresh random area each round (falls back to all areas if the list can't be fetched); `""` = all areas. |
+| `TAUCETI_ROADMAP_ONLY` | _(unset)_ | Comma-separated roadmap areas for `--roadmap-only`. Unset = a fresh random area each round (falls back to all areas if the list can't be fetched); `""` = all areas. |
 | `TAUCETI_ROADMAP_SKIP` | _(unset)_ | Comma-separated roadmap areas to exclude, for `--roadmap-skip`. |
 | `TAUCETI_ROADMAP_EXTRA_IDENTITIES` | _(unset)_ | Comma-separated extra GitHub logins whose claimed intentions count as the worker's own. |
 | `TAUCETI_RESPECT_CLAIMS` | `true` | Whether roadmap workers avoid others' claimed intentions; `false` is the same as `--ignore-claims`. |

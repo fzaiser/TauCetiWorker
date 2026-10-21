@@ -50,6 +50,7 @@ from .constants import (
 from .github import GitHub, GitHubError, _parse_iso8601, can_push, me
 from .github_state import StateQueryError
 from .review_state import Meta, ReviewState
+from .roadmap_scope import roadmap_selection
 from .survey_facts import in_scope, roadmap_focuses, target_focuses
 
 # ============================================================================
@@ -419,8 +420,8 @@ def bucket_status_labels(nondraft: list[PRInfo], me_login: str) -> tuple[list[tu
 def roadmap_open_count(prs: list[PRInfo], only: str, skip: list[str]) -> int:
     """Count open roadmap PRs in the current authoring scope.
 
-    ``only`` is the survey's normalized value: a concrete area, ``auto`` (a random eligible area
-    will be selected later), or ``any`` (all eligible areas). For a concrete area, only its exact
+    ``only`` is the survey's normalized value: comma-separated concrete areas, ``auto`` (a random eligible area
+    will be selected later), or ``any`` (all eligible areas). For concrete areas, any exact
     ``roadmap/<area>`` focus counts and --roadmap-only wins over an overlapping skip. Derived area
     labels are authoritative when present; a concrete synchronous target-marker focus
     is the fallback during label lag. ``roadmap/none`` is not roadmap work, while an Unknown label
@@ -431,8 +432,9 @@ def roadmap_open_count(prs: list[PRInfo], only: str, skip: list[str]) -> int:
     def focuses(p: PRInfo):
         return roadmap_focuses(p.labels, p.target_focuses, p.head_ref)
 
-    if only not in ("", "any", "auto"):
-        return sum((areas := focuses(p)) is None or only in areas for p in prs)
+    selected = set(roadmap_selection(only))
+    if selected and only not in ("any", "auto"):
+        return sum((areas := focuses(p)) is None or bool(selected & areas) for p in prs)
 
     skipped = set(skip)
     return sum((areas := focuses(p)) is None or bool(areas - skipped) for p in prs)

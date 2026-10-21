@@ -66,6 +66,8 @@ try:
     rejects("all-roadmaps selection is rejected", args, ["roadmap"], "single roadmap area")
     os.environ["TAUCETI_ROADMAP_ONLY"] = "any"
     rejects("explicit any selection is rejected", args, ["roadmap"], "single roadmap area")
+    os.environ["TAUCETI_ROADMAP_ONLY"] = "Topology,PDE"
+    rejects("multiple source roadmaps are rejected", args, ["roadmap"], "single roadmap area")
 
     os.environ["TAUCETI_ROADMAP_ONLY"] = "Topology"
     resolved = tc.resolve_source(args, ["roadmap"])

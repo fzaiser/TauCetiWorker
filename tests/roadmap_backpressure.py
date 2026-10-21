@@ -47,6 +47,12 @@ def main():
 
     check("one pinned roadmap counts only that exact area", tc.roadmap_open_count(prs, "Topology", []), 3)
     check("another pinned roadmap has its independent count", tc.roadmap_open_count(prs, "PDE", []), 2)
+    check("multiple areas count overlapping PRs once", tc.roadmap_open_count(prs, "Topology,PDE", []), 4)
+    check(
+        "multiple areas trim duplicates and override skips",
+        tc.roadmap_open_count(prs, " Topology, PDE,Topology, ", ["Topology", "PDE"]),
+        4,
+    )
     check("area matching is exact and case-sensitive", tc.roadmap_open_count(prs, "topology", []), 0)
     check("all areas count roadmap PRs once", tc.roadmap_open_count(prs, "any", []), 5)
     check("auto has the same eligible-area scope", tc.roadmap_open_count(prs, "auto", []), 5)
@@ -67,6 +73,7 @@ def main():
     )
     marker = '<!--tauceti-target:v1 {"focus":"Topology","id":"target"}-->'
     check("target marker covers asynchronous label lag", tc.roadmap_open_count([pr(8, body=marker)], "Topology", []), 1)
+    check("target marker supports multiple areas", tc.roadmap_open_count([pr(8, body=marker)], "PDE,Topology", []), 1)
     check("target marker remains scoped", tc.roadmap_open_count([pr(8, body=marker)], "PDE", []), 0)
     any_marker = '<!--tauceti-target:v1 {"focus":"any","id":"target"}-->'
     check(

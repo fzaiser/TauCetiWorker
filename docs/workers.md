@@ -167,11 +167,11 @@ other top-level key is an error, as is any unrecognized field inside a
 | `sandbox` | string | `"host"` | `host` or `bubble`. Progress-report rounds always run on the host |
 | `ignore_quota` | bool | `false` | Skip soft pacing. Provider hard limits still apply; an `auto` worker cannot launch with this enabled |
 | `auto_refresh` | bool | `false` | Renew this worker's Claude access token when it expires, instead of parking until a human runs `claude`. Only safe when nothing else uses the same credential file — the refresh token is single-use. See [quota and pacing](quota.md) |
-| `roadmap_only` | string | unset | The single roadmap area for roadmap rounds. `""` means all areas; unset means a fresh random area each round |
+| `roadmap_only` | string | unset | Comma-separated roadmap areas for maintenance and authoring; each authoring round randomly picks one. `""` means all areas; unset means a fresh random area each round |
 | `roadmap_skip` | string list | `[]` | Roadmap areas to exclude. `roadmap_only` wins on overlap |
 | `roadmap_extra_identities` | string list | `[]` | Extra GitHub logins whose claimed intentions count as this worker's own |
 | `respect_claims` | bool | `true` | Whether to avoid intentions others have claimed |
-| `source` | string | unset | Supplementary repository directory or URL. Requires `roadmap` in `only` and a non-empty `roadmap_only` |
+| `source` | string | unset | Supplementary repository directory or URL. Requires `roadmap` in `only` and one concrete area in `roadmap_only` |
 | `author_model` | string | unset | Exact authoring model. Requires an `agent` other than `auto` |
 | `author_effort` | string | unset | Authoring reasoning effort for Codex, Claude, or Kiro. Requires an explicit `agent` |
 | `pace` | string | unset | Pacing curve as `time%:budget%` points, for example `0:10,50:70,90:90`; rejected by `apply --check` if malformed |
@@ -338,9 +338,9 @@ entry with `enabled = true`.
 | `--anthropic-api-key-file PATH` | `anthropic_api_key_file` |
 | `--ignore-quota` | `ignore_quota`; use with an explicit subscription agent |
 | `--auto-refresh` | `auto_refresh` |
-| `--roadmap-only AREA` | `roadmap_only` |
+| `--roadmap-only AREA[,AREA...]` | `roadmap_only` |
 | `--roadmap-skip AREAS` | `roadmap_skip`, as a comma-separated list |
-| `--source PATH_OR_URL` | `source`; also requires `roadmap` in `--only` and a non-empty `--roadmap-only` |
+| `--source PATH_OR_URL` | `source`; also requires `roadmap` in `--only` and one concrete area in `--roadmap-only` |
 | `--author-model MODEL` | `author_model` |
 | `--author-effort EFFORT` | `author_effort`; Codex, Claude, or Kiro only |
 | `--pace CURVE` | `pace` |
