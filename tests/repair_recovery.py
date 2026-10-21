@@ -44,7 +44,9 @@ class FakeVerification:
         FakeVerification.calls += 1
         if FakeVerification.failures:
             FakeVerification.failures -= 1
-            return dict(status="failed", error="source failure")
+            return dict(
+                status="failed", error="source failure", fingerprint=digest(self.inputs()), receipt=str(self.path)
+            )
         return dict(status="success", fingerprint=digest(self.inputs()), receipt=str(self.path))
 
 
@@ -1001,7 +1003,7 @@ class Fixture(unittest.TestCase):
         self.assertEqual(self.journal()["content_attempts"], 1)
         self.assertEqual(self.values["fix-10-head"], 1)
         phases = [call.kwargs.get("phase") for call in progress.call_args_list if call.kwargs.get("phase")]
-        self.assertEqual(phases, ["recovery-verify", "recovery-repair", "recovery-verify"])
+        self.assertEqual(phases, ["recovery-restore", "recovery-verify", "recovery-repair", "recovery-verify"])
         self.assertTrue(
             all(call.kwargs["target"] == "PR #10" for call in progress.call_args_list if "phase" in call.kwargs)
         )
@@ -1061,8 +1063,37 @@ class Fixture(unittest.TestCase):
             ),
         ):
             self.assertFalse(self.run_recovery())
-        self.assertEqual(self.journal()["reason"]["code"], "invocation-failed")
+        self.assertEqual(self.journal()["reason"]["code"], "verification-invalid-result")
         self.assertIn("tool must batch arguments", self.journal()["reason"]["detail"])
+        self.assertEqual(self.journal().get("content_attempts", 0), 0)
+
+    def test_infrastructure_failure_after_repair_resumes_without_another_model(self):
+        receipts = [
+            dict(status="failed", error="source failure"),
+            dict(status="incomplete", incomplete_reason="tool-failed", error="checker crashed"),
+        ]
+        with (
+            patch.object(self.backend, "verify", side_effect=receipts),
+            patch("tauceti_worker.loop.resolve_work_model", return_value=("claude", False)),
+            patch("tauceti_worker.work_units.raise_on_account_mismatch"),
+            patch("tauceti_worker.agents.run_agent_host", side_effect=self.model_repair) as model,
+        ):
+            self.assertFalse(self.run_recovery())
+        self.assertEqual(self.journal()["reason"]["code"], "verification-tool-failed")
+        self.assertEqual(self.journal()["infrastructure_failures"], 1)
+        self.assertEqual(self.journal()["content_attempts"], 1)
+        self.assertIn("tauceti-verify", model.call_args.args[1])
+        self.assertIn("Do not run the old scope recipe", model.call_args.args[1])
+        self.retry_now()
+        self.backend = rr.WorkerBackend(self.w, self.opts)
+        with patch.object(self.backend, "reconcile", return_value="published"):
+            self.assertTrue(self.run_recovery())
+        self.assertEqual(self.values["fix-10-head"], 1)
+
+    def test_unknown_verification_result_cannot_launch_repair(self):
+        with patch.object(self.backend, "verify", return_value={}):
+            self.assertFalse(self.run_recovery())
+        self.assertEqual(self.journal()["reason"]["code"], "verification-invalid-result")
         self.assertEqual(self.journal().get("content_attempts", 0), 0)
 
     def test_recovery_wait_does_not_starve_normal_work_or_inflate_backoff(self):
@@ -1219,6 +1250,15 @@ class Fixture(unittest.TestCase):
             self.assertNotIn(rel, paths)
         self.assertTrue(list(self.record.glob("retained-extra/*/notes.md")))
         self.assert_retained()
+
+    def test_overlapping_untracked_inventory_lists_each_file_once(self):
+        directory = self.co / ".claude"
+        directory.mkdir()
+        (directory / "settings.local.json").write_text("{}")
+        with patch.object(saved, "_git", side_effect=[b".claude/settings.local.json\0", b".claude/\0"]):
+            files, excluded = saved._untracked(self.co)
+        self.assertEqual(files, [(".claude/settings.local.json", "file")])
+        self.assertEqual(excluded, [])
 
     def test_scratch_only_record_is_obsolete_without_build_or_model(self):
         git(self.co, "reset", "--hard", self.base)
@@ -3063,6 +3103,7 @@ class RealVerifierIntegration(unittest.TestCase):
         with patch("tauceti_worker.agents.warm_host_build_caches") as warm:
             first = backend.verify(case.root, manifest, facts)
             self.assertEqual(first["status"], "success", first.get("error"))
+            self.assertEqual(len(list((case.state / "verification").glob("*/receipt.json"))), 1)
             second = backend.verify(case.root, manifest, facts)
             self.assertEqual(second["status"], "success", second.get("error"))
             for name, phase in second["phases"].items():

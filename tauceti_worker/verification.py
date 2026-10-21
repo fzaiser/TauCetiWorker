@@ -50,6 +50,12 @@ class Incomplete(Exception):
         self.reason = reason
 
 
+class CheckFailed(subprocess.CalledProcessError):
+    def __init__(self, returncode, command, output, phase, log):
+        super().__init__(returncode, command, output=output)
+        self.phase, self.log = phase, log
+
+
 class _HashCache:
     """Directory-grouped mutable hashes, with per-workspace lazy V1 migration."""
 
@@ -409,8 +415,14 @@ class Verification:
 
     def command(self, phase, argv, *, env=None, capture=False):
         self.watch()
-        report_runtime("verifying", verification_phase=phase, verification_receipt=str(self.path))
         log = self.directory / f"{len(self.receipt['commands']):03d}-{phase}.log"
+        report_runtime(
+            "verifying",
+            verification_phase=phase,
+            verification_started_at=time.time(),
+            verification_log=str(log),
+            verification_receipt=str(self.path),
+        )
         entry = dict(phase=phase, argv=argv, started_at=time.time(), ended_at=None, exit=None, log=str(log))
         self.receipt["commands"].append(entry)
         self.save()
@@ -485,7 +497,17 @@ class Verification:
                     f"the tool must batch its arguments (see {log})",
                     reason="argument-limit",
                 )
-            raise subprocess.CalledProcessError(entry["exit"], argv, output=text)
+            if (
+                phase not in STAGES
+                or entry["exit"] < 0
+                or entry["exit"] in {126, 127}
+                or "Traceback (most recent call last):" in text
+            ):
+                raise Incomplete(
+                    f"{phase}: verification tool exited {entry['exit']} (see {log})",
+                    reason="toolchain" if phase == "toolchain" else "tool-failed",
+                )
+            raise CheckFailed(entry["exit"], argv, text, phase, log)
         return (captured_text if capture else text).strip()
 
     def environment(self):
@@ -834,13 +856,15 @@ class Verification:
                 self.storage_monitor.finish()
             self.receipt.update(status="success", ended_at=time.time())
             self.index_success()
-        except subprocess.CalledProcessError as error:
-            probing = bool(self.receipt["commands"] and self.receipt["commands"][-1]["phase"] == "toolchain")
+        except CheckFailed as error:
             self.receipt.update(
-                status="incomplete" if probing else "failed",
-                incomplete_reason="toolchain" if probing else None,
-                error=f"command exited {error.returncode}: {error.cmd}",
+                status="failed",
+                failed_phase=error.phase,
+                error_log=str(error.log),
+                error=f"{error.phase}: check exited {error.returncode} (see {error.log})",
             )
+        except subprocess.CalledProcessError as error:
+            self.receipt.update(status="incomplete", error=str(error), incomplete_reason="preparation")
         except Pressure as error:
             self.receipt.update(
                 status="incomplete",

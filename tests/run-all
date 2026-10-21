@@ -91,6 +91,7 @@ RUN_STDLIB=(
   verification.py
   verification_audit.py
   verification_storage.py
+  recovery_progress.py
   ledger_blocking.py
   loop_sigterm.py
   loop_stuck.py

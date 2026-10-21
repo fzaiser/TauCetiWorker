@@ -237,6 +237,19 @@ archives a superseded intent, waits automatically for a dependency or changed
 external facts, or retains a blocked checkpoint and continues normal selection.
 Final agent output never proves publication or grants permission.
 
+Recovery uses the worker's shared verifier and host agent launcher.
+An agent receives the same verification-helper instructions and scope policy as ordinary helper-based repair, together with the failed receipt and diagnostic log.
+Its checks use the recovery worker's state directory, allowing the supervisor to reuse matching receipts.
+Recovery retains responsibility for restoring edits, original attempt allowances, claims and publication reconciliation.
+
+The verifier distinguishes a completed source check that failed from infrastructure that could not complete a check.
+Only the former can request source repair; this rule also applies to verification after an agent returns.
+Infrastructure failures keep the source and diagnostic reason for retry, while deferred recovery lets the loop consider ordinary PR work.
+The console identifies the PR and distinguishes restoration, verification and agent repair; verification also shows the current check, elapsed time and log path.
+
+Retained-checkout housekeeping currently requires Linux mount metadata before reclaiming a tree.
+On macOS, it leaves those trees queued, including source handoffs that depend on housekeeping; this does not prevent recovery in an existing stable checkout.
+
 The immutable `tauceti-work-recovery/v1` manifest remains intact. A separate,
 fsynced `recovery.json` consumer journal records these states:
 

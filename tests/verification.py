@@ -499,6 +499,26 @@ print('imports timing 1ms; duplicates timing 2ms; axioms timing 3ms', flush=True
         self.assertEqual(result["status"], "incomplete", result.get("error"))
         self.assertEqual(result["incomplete_reason"], "tool-missing")
 
+    def test_crashed_checker_is_infrastructure_failure(self):
+        write(self.root, "scripts/check-expired-mathlib-shims.py", "raise RuntimeError('broken checker')\n")
+        result = self.verify(stage="shim-expiry")
+        self.assertEqual(result["status"], "incomplete", result.get("error"))
+        self.assertEqual(result["incomplete_reason"], "tool-failed")
+        self.assertIn("shim-expiry", result["error"])
+        self.assertIn(".log", result["error"])
+
+    def test_missing_base_is_infrastructure_failure(self):
+        result = self.verify(base="missing-ref")
+        self.assertEqual(result["status"], "incomplete", result.get("error"))
+        self.assertEqual(result["incomplete_reason"], "preparation")
+
+    def test_failed_source_check_names_its_phase_and_log(self):
+        write(self.root, "scripts/check-expired-mathlib-shims.py", "raise SystemExit(1)\n")
+        result = self.verify(stage="shim-expiry")
+        self.assertEqual(result["status"], "failed", result.get("error"))
+        self.assertEqual(result["failed_phase"], "shim-expiry")
+        self.assertTrue(Path(result["error_log"]).is_file())
+
     def test_shared_shim_wrapper_uses_worker_python_in_subprocess(self):
         from tauceti_tools.templates import python_wrapper
 

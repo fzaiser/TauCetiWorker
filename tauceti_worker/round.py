@@ -375,6 +375,10 @@ def _round_status(started: float) -> str:
     doing = " ".join(part for part in (phase, target) if part) or str(snap.get("state") or "running").replace("-", " ")
     parts = [f"⏳ {console.hms(time.time() - started)}", doing]
     round_log = snap.get("round_log")
+    if snap.get("state") == "verifying" and snap.get("verification_phase"):
+        elapsed = time.time() - (snap.get("verification_started_at") or started)
+        parts.append(f"checking {snap['verification_phase']} ({console.hms(elapsed)})")
+        round_log = snap.get("verification_log") or round_log
     progress = _engine_progress(round_log) if phase == "review" else None
     if progress:
         parts.append(progress)

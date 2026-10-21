@@ -29,6 +29,9 @@ The worker runs source style checks with one manifest-fed header check and a com
 import root, using the discovery and checker code from its pinned TauCetiTools package.
 Environment lint uses that package directly.
 Python checks use the worker's interpreter so its installed dependencies are available.
+Only a completed source check can produce a failed receipt that authorizes source repair.
+Preparation failures, crashed checkers, missing tools and interrupted commands produce incomplete receipts, including when they occur after a repair attempt.
+Failed source receipts identify the check and its diagnostic log.
 The worker and shared package contents are verification inputs, so changes invalidate
 old receipts and changes during verification make the result incomplete.
 The shim checker receives merge-base source and registry snapshots, strict `--fail-on-available`,
@@ -322,7 +325,16 @@ reads (108,680 bytes on that host). This fixed mount-metadata cost depends on ho
 These are fixture preparation costs,
 not a production throughput measurement. Warm payload bytes/file records/walks
 must be zero, and metadata work remains bounded independently of immutable payload/history.
-All fixtures use private activity/cache/state paths and fake verifiers; they launch no paid agents.
+These fixtures use private activity/cache/state paths and fake verification tools; they launch no paid agents.
+
+`tests/recovery_acceptance.py` exercises the installed worker with real Lean builds, the pinned shared shim checker and temporary local Git remotes.
+It covers an authentication wait followed by restart and successful repair, unavailable caches, checker crashes and reuse of verification receipts across processes.
+Provider admission and paid authoring are simulated; the fixture runs build and shim stages, not Mathlib-dependent audits.
+The installed-wheel CI job runs it, and it can also run locally with an already installed toolchain:
+
+```sh
+/path/to/worker/python tests/recovery_acceptance.py --lean-bin /path/to/lean/toolchain/bin
+```
 
 ## Deployment evidence
 

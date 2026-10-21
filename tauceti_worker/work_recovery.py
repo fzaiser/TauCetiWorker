@@ -358,7 +358,8 @@ def _untracked(repo: Path) -> tuple[list[tuple[str, str]], list[tuple[str, str]]
             keep.append((rel, "link"))
         elif stat.S_ISREG(st.st_mode):
             keep.append((rel, "file"))
-    return keep, excluded
+    # Git can list both an ignored directory and files inside it.
+    return sorted(set(keep)), sorted(set(excluded))
 
 
 def inspect(repo: Path, preserved: list[str] | None = None, *, history: bool = False) -> Snapshot:

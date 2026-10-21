@@ -98,6 +98,16 @@ jobs:
           assert AI_PRICES, "prices.json missing from the installed wheel"
           print("bundled prompts/, scripts/ and prices.json present")
           PY
+      - name: Recover saved work with the installed wheel and real Lean
+        run: |
+          lean_version=4.36.0-rc1
+          curl --fail --location --retry 3 \
+            "https://github.com/leanprover/lean4/releases/download/v${lean_version}/lean-${lean_version}-linux.tar.zst" \
+            --output /tmp/lean.tar.zst
+          echo "26b3cea1a006ad419215520b8668dcd3f6a9eeba1a123756563a739f9c6274b2  /tmp/lean.tar.zst" | sha256sum --check
+          tar --zstd -xf /tmp/lean.tar.zst -C /tmp
+          /tmp/smoke/bin/python tests/recovery_acceptance.py \
+            --lean-bin "/tmp/lean-${lean_version}-linux/bin"
 
   docker:
     runs-on: ubuntu-latest

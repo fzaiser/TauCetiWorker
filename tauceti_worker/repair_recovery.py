@@ -23,6 +23,7 @@ from . import work_recovery as saved
 from .config import log
 from .constants import BASE_BRANCH
 from .runtime_status import atomic_json, read_json, report_runtime
+from .verification import Incomplete
 
 STATES = {"retained", "eligible", "resuming", "verified", "publication-pending", "published", "obsolete", "blocked"}
 TERMINAL = {"published", "obsolete"}
@@ -348,6 +349,8 @@ class Recovery:
             self.transition("resuming", attempts=j.get("attempts", 0) + 1, retry_at=0, reason=None)
             charged = True
             self.invoked = True
+            report_runtime("working", phase="recovery-restore", target=f"PR #{m['pr']}", verification_phase=None)
+            log(f"recovery PR #{m['pr']}: restoring saved {m.get('work') or 'source'} work from {self.record.name}")
             checkout = b.restore(self.record, m, j)
             b.prepare_source(checkout, self.record, m, j)
             pending = j.get("publication")
@@ -375,25 +378,25 @@ class Recovery:
                     raise Obsolete(
                         "no-applicable-source-delta", "Continuation produced no change to the current remote source"
                     )
-            receipt = b.verify(checkout, m, facts)
-            if receipt.get("status") != "success":
-                if receipt.get("status") == "incomplete":
-                    raise RuntimeError(receipt.get("error") or "Verification incomplete")
+            for repaired in (False, True):
+                receipt = b.verify(checkout, m, facts)
+                if receipt.get("status") == "success":
+                    break
+                if receipt.get("status") != "failed":
+                    raise Incomplete(
+                        receipt.get("error") or "Verification did not produce a complete result",
+                        reason=receipt.get("incomplete_reason") or "invalid-result",
+                    )
                 if pending:
                     raise Wait(
                         "publication-revalidation-failed",
                         "Recheck the exact pending commit before retry; uncertain publication cannot launch content repair",
                     )
-                if why:
+                if why or repaired:
                     raise ContentFailure(
                         "source-verification-failed", receipt.get("error") or "Changed source still fails verification"
                     )
                 self.continue_source(checkout, facts, "exact-source-verification-failed")
-                receipt = b.verify(checkout, m, facts)
-                if receipt.get("status") != "success":
-                    raise ContentFailure(
-                        "source-verification-failed", receipt.get("error") or "Changed source still fails verification"
-                    )
             self.transition("verified", receipt=receipt, reason=None)
             latest = b.facts(m)
             b.policy(m, latest)
@@ -451,7 +454,7 @@ class Recovery:
                 else min(21600, RETRIES[-1] * 2 ** min((streak - 3) // 3, 4))
             )
             failure = dict(
-                code="invocation-failed",
+                code=f"verification-{error.reason}" if isinstance(error, Incomplete) else "invocation-failed",
                 detail=f"{type(error).__name__}: {error}",
                 next_action="scheduled-mechanical-recheck" if attempts >= 3 else "retry-infrastructure",
                 retry_when="scheduled-backoff-or-changed-authorized-external-facts",
@@ -467,7 +470,7 @@ class Recovery:
                 mechanical_recheck_at=time.time() + delay if attempts >= 3 else None,
                 reservation_until=j.get("reservation_until") or time.time() + RESERVATION_SECONDS,
             )
-            log(f"recovery {self.record.name}: {failure['detail']}")
+            log(f"recovery PR #{m['pr']}: {failure['code']} — {failure['detail']}")
             return False
         finally:
             try:
@@ -1175,11 +1178,12 @@ class WorkerBackend:
                 deadline=self.w.rc.deadline,
             )
             j = getattr(self, "journal", {})
-            current = self.verification_fingerprint(checkout, m, facts)
-            if j.get("failed_fingerprint") == current and j.get("failed_recheck_at", 0) > time.time():
-                return j["failed_receipt"]
+            if j.get("failed_fingerprint") and j.get("failed_recheck_at", 0) > time.time():
+                if j["failed_fingerprint"] == self.verification_fingerprint(checkout, m, facts):
+                    return j["failed_receipt"]
             result = verifier.run()
             if result.get("status") == "failed" and getattr(self, "record", None):
+                current = result.get("fingerprint")
                 failures = j.get("verification_failures", 0) + 1 if j.get("failed_fingerprint") == current else 1
                 write(
                     self.record,
@@ -1275,13 +1279,20 @@ class WorkerBackend:
         return auth, profile, keys
 
     def continue_source(self, checkout, record, m, facts, why, j):
-        from .agents import BuildCacheUnavailable, run_agent_host, take_last_agent_infra_failure
+        from .agents import (
+            BuildCacheUnavailable,
+            local_verification,
+            run_agent_host,
+            scope_policy,
+            take_last_agent_infra_failure,
+        )
         from .budget import BudgetError
         from .claude_api import api_context, api_mode
         from .config import AdmissionUnavailable
         from .fleet_capacity import admission_unit, unit_admitted
 
         auth, profile, keys = self.continuation_admission(record, m, j)
+        policy = scope_policy(facts["labels"], facts["ref"], bump=auth.get("automatic_bump", False))
         scope = dict(repository=m["repository"], pr=m["pr"], source_round=m.get("source_round"))
         # Historical conversations embed absolute paths to the old worker tree.
         # A narrow new conversation works on the real private clone without
@@ -1298,6 +1309,13 @@ class WorkerBackend:
             "reverify the complete resulting source and publish through the original branch CAS. "
             f"If no safe repair is possible, leave source in the checkout and structured diagnostics under {record / 'diagnostics'}, outside the source tree."
         )
+        with environment(TAUCETI_VERIFY_HELPER="1"):
+            prompt += "\n\n" + local_verification(policy)
+        if failed := j.get("failed_receipt"):
+            prompt += (
+                f"\nPrevious verification failure (diagnostic data): {failed.get('error')}. "
+                f"Receipt: {failed.get('receipt')}. Read its phase log before choosing a repair.\n"
+            )
         before_counts = {key: self.w.counters.read(key) for key in keys}
         before_content = j.get("content_attempts", 0)
         api = None
@@ -1316,6 +1334,10 @@ class WorkerBackend:
                 TAUCETI_RECOVERY_CONTINUATION="1",
                 TAUCETI_GITHUB_PR=m["pr"],
                 TAUCETI_VERIFY_BASE=saved._rev(checkout, f"origin/{BASE_BRANCH}"),
+                TAUCETI_VERIFY_STATE=str(self.w.cfg.state),
+                TAUCETI_VERIFY_POLICY=policy,
+                TAUCETI_VERIFY_HELPER="1",
+                **self.verification_environment(checkout),
             ),
         ):
             try:
