@@ -48,13 +48,13 @@ def stub_endpoint(url, headers, timeout=15):
     return 200, IDLE, None
 
 
-def stub_bootstrap(_self):
+def stub_bootstrap(_self, provider):
     CALLS["bootstrap"] += 1
     return True, "ok"
 
 
 tc.quota._http_get_json = stub_endpoint
-tc.quota.Quota._claude_bootstrap_request = stub_bootstrap
+tc.quota.Quota._bootstrap_request = stub_bootstrap
 
 
 def make_cfg(wid="test"):
@@ -135,7 +135,7 @@ except Stop:
     pass
 check("a round is spawned", len(spawned), 1)
 check("...pinned to claude", "claude" in spawned[0], True)
-check("...carrying the launch-stage authorization", "--claude-bootstrap" in spawned[0], True)
+check("...carrying the launch-stage authorization", "--quota-bootstrap" in spawned[0], True)
 check("the loop itself never made the request", CALLS["bootstrap"], 0)
 check("ordinary initialization keeps pacing enabled in the child", "--ignore-quota" in spawned[0], False)
 
@@ -151,7 +151,7 @@ for ignore in (False, True):
     check(f"idle session + weekly over pace: ignore_quota={ignore} controls launch", len(spawned), int(ignore))
     if ignore:
         check("the child receives the pacing override", "--ignore-quota" in spawned[0], True)
-        check("the child receives bootstrap authorization", "--claude-bootstrap" in spawned[0], True)
+        check("the child receives bootstrap authorization", "--quota-bootstrap" in spawned[0], True)
 check("selecting an idle, over-pace provider spends nothing", CALLS["bootstrap"], 0)
 cfg = make_cfg("one-shot-ignore")
 check(
@@ -172,7 +172,7 @@ tc.work_units.survey = lambda *a, **k: tc.Survey(worker_id=cfg.wid)
 tc.work_units.mirror_creds = lambda _cfg: None
 w = tc.Worker(cfg, None, None, tc.Counters(cfg), None, None)
 opts = tc.RoundOpts(
-    only=["review"], agent="claude", work_model="claude", sandbox_host=True, dry_run=False, claude_bootstrap=True
+    only=["review"], agent="claude", work_model="claude", sandbox_host=True, dry_run=False, quota_bootstrap=True
 )
 try:
     tc.run_round(w, opts)
@@ -225,7 +225,7 @@ tc.quota._http_get_json = stub_endpoint
 authorized = {"n": 0}
 
 
-def stub_authorize(_self, *, ignore_quota=False):
+def stub_authorize(_self, provider, *, ignore_quota=False):
     authorized["n"] += 1
     return tc.Provider("claude", True, "opus", [tc.Window("session", 1.0, 20.0, None, "under-pace", 20.0)])
 
@@ -234,7 +234,7 @@ ran = []
 tc.work_units._host_agent_binary = lambda stage, model: None  # the binary preflight is not what's under test
 tc.work_units._still_actionable = lambda *a: True  # nor is the pre-launch re-read (see review_state_freshness)
 tc.work_units.do_review = lambda *a, **k: ran.append("review") or 0
-tc.quota.Quota.authorize_claude_launch = stub_authorize
+tc.quota.Quota.authorize_launch = stub_authorize
 
 rc = tc.work_units.dispatch("review", w, tc.Survey(worker_id=cfg.wid), tc.Candidate(1, "head", ""), opts)
 check("with work in hand, the launch stage runs", authorized["n"], 1)
@@ -245,13 +245,13 @@ authorized["n"] = 0
 ran.clear()
 
 
-def stub_refuse(_self, *, ignore_quota=False):
+def stub_refuse(_self, provider, *, ignore_quota=False):
     authorized["n"] += 1
     win = tc.Window("session", None, 0.0, None, tc.STATE_IDLE, 0.0, "bootstrap failed: claude exited 1")
     return tc.Provider("claude", False, None, [win])
 
 
-tc.quota.Quota.authorize_claude_launch = stub_refuse
+tc.quota.Quota.authorize_launch = stub_refuse
 try:
     tc.work_units.dispatch("review", w, tc.Survey(worker_id=cfg.wid), tc.Candidate(1, "head", ""), opts)
     check("a refused launch stops the round", False, True)

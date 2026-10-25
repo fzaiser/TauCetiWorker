@@ -87,7 +87,7 @@ for name, chosen, p, expected in cases:
 # whatever was there, which is the very thing the flag's own help says it does not do.
 def resolve(chosen, p, *, agent="claude", quota_cmd=None):
     """(model, bootstrap) or the NoProgress/SystemExit it raised, and how the pacer was asked. The real
-    claude_pending_init runs against the real Provider, so a bootstrap can only be blessed by a provider
+    pending_init_provider runs against the real Provider, so a bootstrap can only be blessed by a provider
     that genuinely carries bootstrap_eligible."""
     saved_choose = tc.loop.choose_model
     calls = []

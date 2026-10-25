@@ -177,9 +177,8 @@ class RoundOpts:
     sandbox_host: bool  # True = run on the host (the default); False = --bubble (use the sandbox)
     dry_run: bool
     source: str | None = None  # local directory or Git URL used read-only by a single-area roadmap PR
-    # Claude was selected while one of its quota windows was reset-but-unopened. The round may spend ONE
-    # small claude request to open it — at its LAUNCH STAGE (dispatch), never before there is work.
-    claude_bootstrap: bool = False
+    # A provisionally selected provider may initialize its quota window only after work is ready.
+    quota_bootstrap: bool = False
     authoring_profile: AuthoringProfile | None = None
     # --account: the Codex account this round is REQUIRED to spend under. Checked, never switched to.
     account: str | None = None
@@ -1120,7 +1119,7 @@ def dispatch(stage: str, w: Worker, sv: Survey, c: Candidate, opts: RoundOpts) -
     # credentials at the top of every round, so a rotation since preflight is visible by now.
     if getattr(opts, "account", None):
         raise_on_account_mismatch(w.cfg, opts.account, opts.work_model, stage)
-    # Last free check before anything that spends — the entitlement probe and the Claude bootstrap
+    # Last free check before anything that spends — the entitlement probe and the quota bootstrap
     # below both cost a provider request. Everything above this line is local (a binary on PATH, the
     # configured account), so it stays ahead of a network read that only matters if we get this far.
     if c.pr and hasattr(getattr(w, "rs", None), "maintenance_blocked"):
@@ -1141,15 +1140,11 @@ def dispatch(stage: str, w: Worker, sv: Survey, c: Candidate, opts: RoundOpts) -
         checked = validate_kiro_model_access(w.cfg, kiro_probe_profile)
         if stage != "review":
             opts.authoring_profile = checked
-    # LAUNCH STAGE for a Claude round selected on an unopened window. Everything the bootstrap decision
-    # requires is true exactly here and not earlier: a concrete work unit is in hand, the survey (and so
-    # the GitHub preflight) succeeded, Claude is the model actually about to run, and the agent binary
-    # exists. A round that surveys and finds nothing never reaches this line, so deciding that there is
-    # nothing to do costs no quota.
-    if opts.claude_bootstrap and opts.work_model == "claude":
-        prov = Quota(w.cfg).authorize_claude_launch(ignore_quota=opts.ignore_quota)
+    # Initialization spends quota, so it waits until a concrete work unit has passed preflight.
+    if opts.quota_bootstrap and opts.work_model in {"codex", "claude"}:
+        prov = Quota(w.cfg).authorize_launch(opts.work_model, ignore_quota=opts.ignore_quota)
         if not prov.available and not (opts.ignore_quota and _unavail_reason(prov)[0]):
-            raise NoProgress(f"claude: {prov.error or _unavail_reason(prov)[1]} — not launching this round")
+            raise NoProgress(f"{opts.work_model}: {prov.error or _unavail_reason(prov)[1]} — not launching this round")
     if needs_model_probe:
         # Resolve the default model to one this host serves before the banner and before opening the
         # authoring checkout. The probe is checkout-independent, and the selected profile is then

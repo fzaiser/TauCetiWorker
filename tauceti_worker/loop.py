@@ -84,26 +84,30 @@ def _wait_quota_line(snap: dict, *, markup: bool = True) -> str:
     `markup=False` for a plain destination; see quota_line.
     """
     line = quota_line(snap, markup=markup)
-    prov = snap.get("claude")
-    if prov is None or prov.error or prov.available:
-        return line
-
-    windows = prov.windows or []
-    idle = [w for w in windows if w.status == "idle"]
-    paced = [w for w in windows if w.status in ("at-budget", "over-pace")]
-    other_hard = [w for w in windows if w.status not in ("under-pace", "at-budget", "over-pace", "idle")]
-    if not idle or not paced or other_hard or any(w.detail != "window reset; awaiting initialization" for w in idle):
-        return line
-
-    why = "; ".join(
-        [
-            *(_pace_reason(w) for w in paced),
-            *(f"{w.name} window reset — initialization deferred until pacing permits" for w in idle),
-        ]
-    )
-    old = quota_line({"claude": prov}, markup=markup)
-    new = f"claude {_glyph('~', 'yellow', markup)} ({why})"
-    return line.replace(old, new, 1)
+    for name, prov in snap.items():
+        if prov is None or prov.error or prov.available:
+            continue
+        windows = prov.windows or []
+        idle = [w for w in windows if w.status == "idle"]
+        paced = [w for w in windows if w.status in ("at-budget", "over-pace")]
+        other_hard = [w for w in windows if w.status not in ("under-pace", "at-budget", "over-pace", "idle")]
+        if (
+            not idle
+            or not paced
+            or other_hard
+            or any(w.detail != "window reset; awaiting initialization" for w in idle)
+        ):
+            continue
+        why = "; ".join(
+            [
+                *(_pace_reason(w) for w in paced),
+                *(f"{w.name} window reset — initialization deferred until pacing permits" for w in idle),
+            ]
+        )
+        old = quota_line({name: prov}, markup=markup)
+        new = f"{name} {_glyph('~', 'yellow', markup)} ({why})"
+        line = line.replace(old, new, 1)
+    return line
 
 
 def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, ...] = ()) -> int:
@@ -213,7 +217,7 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
                 recovery_reason=None,
                 recovery_record=None,
             )
-            # 1) Decide the model and whether to run this cycle. `pending_init` means Claude was picked
+            # 1) Decide the model and whether to run this cycle. `pending_init` means a provider was picked
             # while a window of it is reset-but-unopened: the round is authorized to spend ONE small
             # request to open it, but only once it has found work (see work_units.dispatch).
             pending_init = False
@@ -236,7 +240,7 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
                 verdict = _ignore_quota_verdict(_chosen, prov)
                 # An unopened window is the one hard block --ignore-quota may still clear, because the
                 # clearing is a bounded request rather than an override of a real limit.
-                if verdict == "wait" and agent == "claude" and claude_pending_init(snap, ignore_quota=True):
+                if verdict == "wait" and pending_init_provider(snap, ignore_quota=True) == agent:
                     verdict, pending_init = "run", True
                 if verdict == "wait":
                     why = prov.error if (prov and prov.error) else (_unavail_reason(prov)[1] if prov else "unavailable")
@@ -256,8 +260,9 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
                 model = agent
             else:
                 model, snap = choose_model(cfg, agent, quota_cmd, refresh=True, renew=True)
-                if model is None and claude_pending_init(snap):
-                    model, pending_init = "claude", True
+                if model is None:
+                    model = pending_init_provider(snap)
+                    pending_init = model is not None
                 if model is None:
                     # Wake for whichever provider can change first. An idle/unknown alternative may
                     # become usable at the next poll, so another provider's distant reset or long
@@ -342,7 +347,7 @@ def cmd_loop(args, cfg: Config, *, only: list[str], agent: str, prs: tuple[int, 
                 # Authorization travels with the round, not with the pacer: the child asks for it only
                 # after it has surveyed and picked a work unit, so a round that finds nothing to do never
                 # spends the request. The GitHub preflight above has already passed at this point.
-                tail.append("--claude-bootstrap")
+                tail.append("--quota-bootstrap")
             # Audit-capable workers use a fixed Luna/Haiku inspection profile and reject
             # authoring overrides. Their maintenance fallback resolves its normal defaults.
             if model and not recovery_only and "security-audit" not in only:
@@ -651,15 +656,16 @@ def _retry_hint(prov: Provider | None) -> str:
     return f"; retry in ~{round(after / 60)}m" if after < 90 * 60 else f"; retry in ~{_hours(after)}"
 
 
-def claude_pending_init(snap: dict, *, ignore_quota: bool = False) -> bool:
-    """True when Claude is unavailable ONLY because a window has reset and nothing has opened the next
-    cycle yet, subject to pacing unless explicitly ignored (Quota decides both, purely).
-
-    Such a provider is not "out of quota" — it is unopened, and only a Claude request can open it. It
-    may therefore be selected PROVISIONALLY: nothing is spent by selecting it, and the round makes the
-    one bootstrap request at its launch stage, after it has found actual work to do."""
-    prov = snap.get("claude")
-    return bool(prov and prov.can_bootstrap(ignore_quota=ignore_quota))
+def pending_init_provider(snap: dict, *, ignore_quota: bool = False) -> str | None:
+    """Select an unopened provider provisionally; only its launch stage may spend the request."""
+    return next(
+        (
+            name
+            for name in ("codex", "claude")
+            if (prov := snap.get(name)) and prov.can_bootstrap(ignore_quota=ignore_quota)
+        ),
+        None,
+    )
 
 
 def resolve_work_model(
@@ -694,8 +700,8 @@ def resolve_work_model(
         # rounds (see cmd_loop). Reading usage costs no quota, and firing a round at an exhausted or
         # unreadable provider only buys a clone, an engine launch, and a scoreboard full of errors.
         verdict = _ignore_quota_verdict(chosen, snap.get(agent))
-        if verdict == "wait" and agent == "claude" and claude_pending_init(snap, ignore_quota=True):
-            return "claude", True
+        if verdict == "wait" and pending_init_provider(snap, ignore_quota=True) == agent:
+            return agent, True
         if verdict == "wait":
             prov = snap.get(agent)
             why = prov.error if (prov and prov.error) else (_unavail_reason(prov)[1] if prov else "unavailable")
@@ -712,8 +718,8 @@ def resolve_work_model(
         if verdict == "over-pace":
             log(f"quota: {agent} over-pace; --ignore-quota set — running anyway")
         return agent, False
-    if chosen is None and claude_pending_init(snap):
-        return "claude", True
+    if chosen is None and (pending := pending_init_provider(snap)):
+        return pending, True
     if chosen is None:
         raise NoProgress(
             f"no model available right now (agent={agent}) — {quota_line(snap, markup=False)}; not launching this round"

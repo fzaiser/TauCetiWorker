@@ -80,7 +80,7 @@ CODEX_OK = {
 
 TOKEN = "tok-abc"
 FP = tc.Quota._fingerprint(TOKEN)
-_REAL_BOOTSTRAP_REQUEST = tc.Quota._claude_bootstrap_request
+_REAL_BOOTSTRAP_REQUEST = tc.Quota._bootstrap_request
 
 
 class Endpoint:
@@ -108,11 +108,11 @@ class Bootstrapper:
     def install(self):
         boot = self
 
-        def _req(_self):
+        def _req(_self, provider):
             boot.calls += 1
             return boot.ok, boot.detail
 
-        tc.quota.Quota._claude_bootstrap_request = _req
+        tc.quota.Quota._bootstrap_request = _req
         return self
 
 
@@ -182,7 +182,7 @@ boot = Bootstrapper().install()
 ep = Endpoint(IDLE, active(session_pct=2))  # idle first, initialized afterwards
 tc.quota._http_get_json = ep
 q = make_quota()
-p = q.authorize_claude_launch()
+p = q.authorize_launch("claude")
 check("an authorized launch makes exactly one request", boot.calls, 1)
 check("it re-reads usage afterwards", ep.calls, 2)
 check("the FRESH telemetry decides", (p.available, p.model), (True, "opus"))
@@ -198,7 +198,7 @@ boot = Bootstrapper().install()
 os.environ["TAUCETI_PACE"] = "0:0,100:0"  # every budget is 0 ⇒ τ₀ = 100 ⇒ not even initializable
 q = make_quota()
 tc.quota._http_get_json = Endpoint(IDLE)
-p = q.authorize_claude_launch()
+p = q.authorize_launch("claude")
 check("a curve with no budget anywhere never initializes", boot.calls, 0)
 os.environ.pop("TAUCETI_PACE", None)
 
@@ -208,7 +208,7 @@ q = make_quota()  # and an exact equality afterwards, independent of wall-clock 
 tc.quota._http_get_json = Endpoint(
     IDLE, {"five_hour": {"utilization": 20, "resets_at": iso(3600)}, "seven_day": weekly()}
 )
-p = q.authorize_claude_launch()
+p = q.authorize_launch("claude")
 check("bootstrap succeeded, but the fresh window has no headroom yet", boot.calls, 1)
 check("...so no task starts", (p.available, p.windows[0].status), (False, "at-budget"))
 os.environ.pop("TAUCETI_PACE", None)
@@ -218,10 +218,10 @@ boot = Bootstrapper(ok=False, detail="claude exited 1: Rate limit exceeded").ins
 ep = Endpoint(IDLE)
 tc.quota._http_get_json = ep
 q = make_quota()
-p = q.authorize_claude_launch()
+p = q.authorize_launch("claude")
 check("a failed bootstrap does not make claude available", p.available, False)
 check("the failure is reported verbatim", reason(p), "session bootstrap failed: claude exited 1: Rate limit exceeded")
-p = q.authorize_claude_launch()
+p = q.authorize_launch("claude")
 check("...and is not retried for the same episode", boot.calls, 1)
 check("...with the diagnosis preserved", reason(p), "session bootstrap failed: claude exited 1: Rate limit exceeded")
 check("...and the parent loop no longer schedules doomed surveys", p.bootstrap_eligible, False)
@@ -233,7 +233,7 @@ boot = Bootstrapper().install()
 os.environ["TAUCETI_PACE"] = "0:0,90:0,100:95"
 tc.quota._http_get_json = Endpoint(IDLE)
 q = make_quota()
-p = q.authorize_claude_launch()
+p = q.authorize_launch("claude")
 check("τ₀ > 0 ⇒ no bootstrap request", boot.calls, 0)
 check("τ₀ > 0 ⇒ no task", (p.available, p.model), (False, None))
 check("τ₀ > 0 ⇒ not even eligible", p.bootstrap_eligible, False)
@@ -269,7 +269,7 @@ for label, payload, pace in siblings:
     if pace:
         os.environ["TAUCETI_PACE"] = pace
     q = make_quota()
-    p = q.authorize_claude_launch()
+    p = q.authorize_launch("claude")
     check(f"idle session + {label} ⇒ no bootstrap", boot.calls, 0)
     check(f"idle session + {label} ⇒ not available", p.available, False)
     os.environ.pop("TAUCETI_PACE", None)
@@ -283,15 +283,15 @@ for label, payload, pace in siblings:
     q = make_quota()
     allowed = label in {"weekly at budget", "weekly over pace"}
     snapshot = q.claude()
-    check(f"{label}: ordinary selection stays blocked", tc.claude_pending_init({"claude": snapshot}), False)
+    check(f"{label}: ordinary selection stays blocked", bool(tc.pending_init_provider({"claude": snapshot})), False)
     check(
         f"{label}: selection with --ignore-quota respects hard limits",
-        tc.claude_pending_init({"claude": snapshot}, ignore_quota=True),
+        bool(tc.pending_init_provider({"claude": snapshot}, ignore_quota=True)),
         allowed,
     )
     # Start the scripted response sequence again for the launch-stage read.
     tc.quota._http_get_json = Endpoint(payload, active(session_pct=1, weekly_pct=90))
-    p = q.authorize_claude_launch(ignore_quota=True)
+    p = q.authorize_launch("claude", ignore_quota=True)
     check(f"{label}: --ignore-quota bootstrap requests", boot.calls, int(allowed))
     if allowed:
         check(f"{label}: fresh usage still reports pacing", tc._unavail_reason(p)[0], True)
@@ -300,22 +300,22 @@ for label, payload, pace in siblings:
 boot = Bootstrapper().install()
 tc.quota._http_get_json = Endpoint(IDLE, active(session_pct=1))
 os.environ["TAUCETI_PACE"] = "0:0,90:0,100:95"
-p = make_quota().authorize_claude_launch(ignore_quota=True)
+p = make_quota().authorize_launch("claude", ignore_quota=True)
 check("--ignore-quota also overrides an initial zero-budget plateau", boot.calls, 1)
 os.environ.pop("TAUCETI_PACE", None)
 
 for pct in (95, 100):
     boot = Bootstrapper().install()
     tc.quota._http_get_json = Endpoint({"five_hour": active(session_pct=pct)["five_hour"], "seven_day": None})
-    p = make_quota().authorize_claude_launch(ignore_quota=True)
+    p = make_quota().authorize_launch("claude", ignore_quota=True)
     check(f"session {pct}% prevents weekly initialization even with --ignore-quota", boot.calls, 0)
 
 for ok in (True, False):
     boot = Bootstrapper(ok=ok, detail="test failure").install()
     tc.quota._http_get_json = Endpoint({"five_hour": None, "seven_day": weekly(90)})
     q = make_quota()
-    q.authorize_claude_launch(ignore_quota=True)
-    p = q.authorize_claude_launch(ignore_quota=True)
+    q.authorize_launch("claude", ignore_quota=True)
+    p = q.authorize_launch("claude", ignore_quota=True)
     check(f"--ignore-quota preserves the reservation after bootstrap success={ok}", boot.calls, 1)
     check("a reserved idle window cannot be selected again", p.can_bootstrap(ignore_quota=True), False)
 
@@ -323,7 +323,7 @@ for ok in (True, False):
 for label, payload in (("malformed", MALFORMED), ("absent", ABSENT)):
     boot = Bootstrapper().install()
     tc.quota._http_get_json = Endpoint(payload)
-    p = make_quota().authorize_claude_launch()
+    p = make_quota().authorize_launch("claude")
     check(f"{label} telemetry never triggers a bootstrap request", boot.calls, 0)
     check(f"{label} telemetry fails closed", p.available, False)
 
@@ -333,7 +333,7 @@ tc.quota._http_get_json = Endpoint(
     {"five_hour": {"utilization": 5, "resets_at": iso(3600)}, "seven_day": None},
     active(session_pct=5, weekly_pct=1),
 )
-p = make_quota().authorize_claude_launch()
+p = make_quota().authorize_launch("claude")
 check("a weekly reset bootstraps too", boot.calls, 1)
 check("weekly reset resolves to an available provider", p.available, True)
 
@@ -345,8 +345,8 @@ home = make_home()
 qa, qb = make_quota(home, "worker1"), make_quota(home, "worker2")
 check("the two workers really are separate", qa.cache_dir != qb.cache_dir, True)
 check("...and share one reservation file", qa._bootstrap_paths()[0], qb._bootstrap_paths()[0])
-pa = qa.authorize_claude_launch()
-pb = qb.authorize_claude_launch()
+pa = qa.authorize_launch("claude")
+pb = qb.authorize_launch("claude")
 check("two workers, one idle episode ⇒ one request", boot.calls, 1)
 check("the second worker is told why it is waiting", reason(pb), "session bootstrap attempted; awaiting fresh usage")
 
@@ -354,7 +354,7 @@ check("the second worker is told why it is waiting", reason(pb), "session bootst
 before = qa._episode_key("session")
 (home / ".claude" / ".credentials.json").write_text(tc.json.dumps({"claudeAiOauth": {"accessToken": "rotated-token"}}))
 check("a token refresh does not create a new bootstrap allowance", qa._episode_key("session"), before)
-qa.authorize_claude_launch()
+qa.authorize_launch("claude")
 check("...so no second request after a refresh", boot.calls, 1)
 
 # An in-progress reservation (a worker that has not reported back) suppresses duplicates until stale.
@@ -364,12 +364,12 @@ q = make_quota()
 ledger, _lock = q._bootstrap_paths()
 ledger.parent.mkdir(parents=True, exist_ok=True)
 ledger.write_text(tc.json.dumps({q._episode_key("session"): {"state": "in-progress", "at": int(time.time())}}))
-p = q.authorize_claude_launch()
+p = q.authorize_launch("claude")
 check("a live in-progress reservation suppresses the request", boot.calls, 0)
 check("...and says who holds it", reason(p), "session bootstrap in progress (another worker holds the reservation)")
-stale_at = int(time.time() - tc.CLAUDE_BOOTSTRAP_TIMEOUT_S - tc.CLAUDE_BOOTSTRAP_STALE_MARGIN_S - 1)
+stale_at = int(time.time() - tc.QUOTA_BOOTSTRAP_TIMEOUT_S - tc.QUOTA_BOOTSTRAP_STALE_MARGIN_S - 1)
 ledger.write_text(tc.json.dumps({q._episode_key("session"): {"state": "in-progress", "at": stale_at}}))
-q.authorize_claude_launch()
+q.authorize_launch("claude")
 check("a STALE in-progress reservation is reclaimed", boot.calls, 1)
 
 # The claim is written BEFORE the request: a crash right after the request still leaves a reservation.
@@ -379,15 +379,15 @@ q = make_quota()
 seen = {}
 
 
-def _crashing(_self):
+def _crashing(_self, provider):
     seen["ledger"] = tc.json.loads(q._bootstrap_paths()[0].read_text())
     boot.calls += 1
     raise KeyboardInterrupt  # the process dies mid-request
 
 
-tc.quota.Quota._claude_bootstrap_request = _crashing
+tc.quota.Quota._bootstrap_request = _crashing
 try:
-    q.authorize_claude_launch()
+    q.authorize_launch("claude")
 except KeyboardInterrupt:
     pass
 check(
@@ -396,7 +396,7 @@ check(
     ["in-progress"],
 )
 Bootstrapper().install()
-p = make_quota(q.cfg.home, "another").authorize_claude_launch()
+p = make_quota(q.cfg.home, "another").authorize_launch("claude")
 check(
     "a crashed worker's claim still suppresses the next one",
     reason(p),
@@ -407,10 +407,10 @@ check(
 boot = Bootstrapper().install()
 tc.quota._http_get_json = Endpoint(IDLE)
 q = make_quota()
-blocked = q._claude_creds_source() / tc.CLAUDE_QUOTA_DIRNAME
+blocked = q._claude_creds_source() / tc.QUOTA_DIRNAME
 blocked.parent.mkdir(parents=True, exist_ok=True)
 blocked.write_text("not a directory")  # the ledger dir cannot be created
-p = q.authorize_claude_launch()
+p = q.authorize_launch("claude")
 check("an unwritable reservation ⇒ no request", boot.calls, 0)
 check("...and an honest reason", reason(p), "session bootstrap reservation unavailable (cannot lock the shared ledger)")
 
@@ -459,7 +459,7 @@ for code, want, ra in (
 ):
     boot = Bootstrapper().install()
     tc.quota._http_get_json = Endpoint({}, code=code, retry_after=ra)
-    p = make_quota().authorize_claude_launch()
+    p = make_quota().authorize_launch("claude")
     check(f"HTTP {code} names the status code", (p.available, p.error), (False, want))
     check(f"HTTP {code} makes no bootstrap request", (boot.calls, p.retry_after), (0, ra))
 
@@ -468,7 +468,7 @@ for code, want, ra in (
 for body in (["five_hour"], "nope", 42, True):
     boot = Bootstrapper().install()
     tc.quota._http_get_json = Endpoint(body)
-    p = make_quota().authorize_claude_launch()
+    p = make_quota().authorize_launch("claude")
     check(
         f"non-object body {body!r} ⇒ named error",
         p.error,
@@ -478,11 +478,11 @@ for body in (["five_hour"], "nope", 42, True):
 for body in ([], "", 0, None):
     boot = Bootstrapper().install()
     tc.quota._http_get_json = Endpoint(body)
-    p = make_quota().authorize_claude_launch()
+    p = make_quota().authorize_launch("claude")
     check(f"empty body {body!r} ⇒ named error, no exception", (p.error, boot.calls), ("claude usage response empty", 0))
 
 # --- the bootstrap subprocess is isolated -----------------------------------------------------------
-tc.quota.Quota._claude_bootstrap_request = _REAL_BOOTSTRAP_REQUEST
+tc.quota.Quota._bootstrap_request = _REAL_BOOTSTRAP_REQUEST
 q = make_quota()
 os.environ.update(
     {
@@ -498,7 +498,7 @@ os.environ.update(
         "CLAUDECODE": "1",
     }
 )
-argv, env, cwd = q._bootstrap_spec()
+argv, env, cwd = q._bootstrap_spec("claude")
 check("the request is one minimal `claude -p` turn", (argv[1], len(argv)), ("-p", 5))
 check("the bootstrap uses exact Opus 5.5", argv[argv.index("--model") + 1], "claude-opus-5-5")
 for var in (
@@ -542,24 +542,24 @@ def stub_claude(name, body):
 
 
 tc.quota.CLAUDE_CMD = stub_claude("ok.sh", "echo ok; exit 0")
-check("a successful `claude -p` ⇒ (True, ok)", q._claude_bootstrap_request(), (True, "ok"))
+check("a successful `claude -p` ⇒ (True, ok)", q._bootstrap_request("claude"), (True, "ok"))
 tc.quota.CLAUDE_CMD = stub_claude("fail.sh", "echo 'Invalid API key' >&2; exit 3")
-ok, detail = q._claude_bootstrap_request()
+ok, detail = q._bootstrap_request("claude")
 check(
     "a failing `claude -p` ⇒ (False, exit code + last line)",
     (ok, detail.endswith("exited 3: Invalid API key")),
     (False, True),
 )
 tc.quota.CLAUDE_CMD = str(scripts / "does-not-exist")
-ok, detail = q._claude_bootstrap_request()
+ok, detail = q._bootstrap_request("claude")
 check("a missing claude binary is reported, not raised", (ok, detail.endswith("not found on PATH")), (False, True))
 tc.quota.CLAUDE_CMD = stub_claude("hang.sh", "sleep 30")
-tc.quota.CLAUDE_BOOTSTRAP_TIMEOUT_S = 1
-ok, detail = q._claude_bootstrap_request()
+tc.quota.QUOTA_BOOTSTRAP_TIMEOUT_S = 1
+ok, detail = q._bootstrap_request("claude")
 check("a hanging claude is bounded by the timeout", (ok, detail.endswith("timed out after 1s")), (False, True))
 tc.quota.CLAUDE_CMD = stub_claude("count.sh", "exit 0")
 before = len(list(Path(tempfile.gettempdir()).glob("tauceti-quota-bootstrap-*")))
-q._claude_bootstrap_request()
+q._bootstrap_request("claude")
 check("the temp cwd is cleaned up", len(list(Path(tempfile.gettempdir()).glob("tauceti-quota-bootstrap-*"))), before)
 
 print(f"\n{'PASS' if not fails else 'FAIL'}: {fails} mismatch(es)")

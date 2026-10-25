@@ -76,7 +76,7 @@ class StartLimitTests(unittest.TestCase):
                             self.assertIn("95% start limit", quota.quota_line({name: p}, markup=False))
             self.assertTrue(self.provider(name, 10, weekly=99).available)
             self.assertFalse(self.provider(name, 10, weekly=100).available)
-            self.assertTrue(self.provider(name, 0, reset=self.now + 18000).available)
+            self.assertTrue(self.provider(name, 0, reset=self.now + 17999).available)
 
     def test_start_limit_dominates_soft_pacing_and_idle_bootstrap(self):
         with patch.dict(os.environ, {"TAUCETI_PACE": "0:0,100:100"}):

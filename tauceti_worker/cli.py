@@ -374,12 +374,13 @@ def add_work_flags(p: argparse.ArgumentParser) -> None:
         "or the usage endpoint refusing to answer — "
         "still backs off (needs an explicit paced --agent codex|claude — 'auto' can't choose without the pacer)",
     )
-    # Internal: the loop sets this on a round it selected while a Claude window was reset-but-unopened.
-    # It authorizes the round's launch stage to spend ONE small claude request to open that window,
+    # Internal: the loop sets this on a round it selected while a quota window was reset-but-unopened.
+    # It authorizes the round's launch stage to spend ONE small request to open that window,
     # once it has actually found work; --ignore-quota separately controls pacing at launch.
     p.add_argument(
+        "--quota-bootstrap",
         "--claude-bootstrap",
-        dest="claude_bootstrap",
+        dest="quota_bootstrap",
         action="store_true",
         help=argparse.SUPPRESS,
     )
@@ -1484,9 +1485,8 @@ def cmd_work(args, *, only: list[str], agent: str, one_round: bool, prs: tuple[i
             sandbox_host=not getattr(args, "bubble", False),
             dry_run=dry,
             source=source,
-            # Either the pacer just selected Claude on an unopened window (one-shot), or the loop did
-            # and passed the authorization down (--claude-bootstrap). Same launch-stage gate either way.
-            claude_bootstrap=pending_init or getattr(args, "claude_bootstrap", False),
+            # Both one-shot and loop runs initialize windows only at the launch stage.
+            quota_bootstrap=pending_init or getattr(args, "quota_bootstrap", False),
             authoring_profile=authoring_profile,
             account=getattr(args, "account", None),
             review_min_queue=review_min_queue,

@@ -21,9 +21,9 @@ The pacer reads the credential files the official CLIs already maintain,
 provider's usage endpoint. It honors `$CLAUDE_CONFIG_DIR`, so switching between
 a personal and a work Claude account is paced correctly.
 
-Reading quota never spends anything, with the one exception described under
-"window bootstrap" below. `tauceti status`, the dashboard, and an auto selection
-that lands on Codex make no model request at all.
+Reading quota never spends anything. `tauceti status`, the dashboard, and provider
+selection make no model request at all. Initializing a window happens separately
+at the launch stage, as described under "window bootstrap" below.
 
 ## Keeping the Claude token alive: `--auto-refresh`
 
@@ -105,11 +105,16 @@ as no constraint.
 
 ## The window bootstrap
 
-There is one gap where the endpoint reports a window with no usage and no reset
-clock: right after that window rolls. Only a Claude request can open the new
-window, so `tauceti` makes one small `claude -p` turn to do it, drops the cached
-usage, and re-reads. The fresh telemetry, not the request, then decides whether a
-round runs.
+A quota window can wait for its first request before starting its clock. Claude
+reports this as a reset window with no usage or reset clock; Codex can report zero
+usage with the entire window duration still remaining. TauCeti treats either as
+awaiting initialization and does not cache that reading.
+
+Once work is ready, TauCeti makes one small request to the selected provider:
+`claude -p` or a read-only, ephemeral `codex exec` outside the checkout. It then
+drops the cached usage and fetches fresh telemetry, which decides whether a round
+may run. If initialization consumes more than the current pacing budget, the
+worker waits for that budget to catch up.
 
 The bootstrap runs only under these conditions:
 
@@ -121,10 +126,11 @@ The bootstrap runs only under these conditions:
   first stretch of a window, say `--pace 0:0,90:0,100:95`, a fresh window may not
   be opened at all, and the status says so (`pace budget stays 0% through 90% of
   the window`) rather than quietly opening one to manufacture a clock.
-- It is claimed under a lock in a shared ledger beside your credentials *before*
-  the request goes out, so every worker on that account, whatever its worker id,
-  checkout, or isolated `$HOME`, makes at most one request per window period,
-  even if one of them crashes mid-flight.
+- It is claimed under a lock in a shared ledger beside the provider's credentials
+  *before* the request goes out. Workers sharing that credential source share the
+  reservation, including workers with isolated `$HOME` directories. A crashed or
+  unsuccessful attempt remains reserved until its retry timeout; each poll cannot
+  send another request. Codex and Claude keep separate reservations.
 
 If the window still is not reporting afterwards, the status reads
 `session bootstrap attempted; awaiting fresh usage` and the worker stays parked.

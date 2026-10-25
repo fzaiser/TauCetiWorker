@@ -102,23 +102,19 @@ p = q._codex_from_payload(
 check("limit_reached ⇒ exhausted", p.windows[0].status, "exhausted")
 check("limit_reached ⇒ unavailable", p.available, False)
 
-# Positive headroom, not "not over budget": a window with ZERO elapsed time has a zero budget under the
-# default curve, so 0% used sits exactly ON the line and there is no room for the request we
-# would be starting. It is a SOFT pacing block (real quota, wrong moment), and it clears itself seconds
-# later as the window ages — or immediately under a curve that grants budget up front.
+# A full unused window may have no running clock until its first request.
 p = q._codex_from_payload(
     {"rate_limit": {"limit_reached": False, "primary_window": win(0, WEEK, WEEK), "secondary_window": None}}
 )
-check("elapsed-0 window sits AT budget, not under it", [w.status for w in p.windows], ["at-budget"])
-check("at budget ⇒ not available", p.available, False)
-check("at budget is a SOFT block", tc._unavail_reason(p)[0], True)
-os.environ["TAUCETI_PACE"] = "0:10,100:100"  # 10% allowed immediately ⇒ real headroom at elapsed 0
+check("full unused window awaits initialization", [w.status for w in p.windows], ["idle"])
+check("idle window cannot launch work directly", p.available, False)
+check("idle window needs the launch-stage gate even with ignore-quota", tc._unavail_reason(p)[0], False)
+check("default curve permits initialization", p.bootstrap_eligible, True)
+os.environ["TAUCETI_PACE"] = "0:10,100:100"
 p = q._codex_from_payload(
     {"rate_limit": {"limit_reached": False, "primary_window": win(0, WEEK, WEEK), "secondary_window": None}}
 )
-check(
-    "a curve with budget up front gives that window headroom", (p.windows[0].status, p.available), ("under-pace", True)
-)
+check("upfront budget still requires initialization", (p.available, p.bootstrap_eligible), (False, True))
 os.environ.pop("TAUCETI_PACE", None)
 
 # --- a cached payload describes the moment it was fetched, not the present --------------------------

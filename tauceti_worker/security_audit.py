@@ -1375,12 +1375,13 @@ def run(cfg, opts, *, min_commits: int = 1) -> int:
     log(f"security-audit: isolated reviewer {provider}/{model}")
     try:
         if any(c["files"] for c in batch["commits"]):
-            if opts.claude_bootstrap and provider == "claude":
-                from .quota import Quota
+            if opts.quota_bootstrap and provider in {"codex", "claude"}:
+                from .quota import Quota, _unavail_reason
 
-                status = Quota(cfg).authorize_claude_launch()
-                if not status.available:
-                    raise NoProgress("security-audit: Claude quota unavailable")
+                ignore_quota = getattr(opts, "ignore_quota", False)
+                status = Quota(cfg).authorize_launch(provider, ignore_quota=ignore_quota)
+                if not status.available and not (ignore_quota and _unavail_reason(status)[0]):
+                    raise NoProgress(f"security-audit: {provider} quota unavailable")
             verdict = inspect(batch, provider, attempt)
         else:
             verdict = {

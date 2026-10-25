@@ -2130,7 +2130,7 @@ class Run(unittest.TestCase):
         self.state = Path(self.tmp.name)
         self.old, self.target = "a" * 40, "b" * 40
         self.batch = {"from_sha": self.old, "input_digest": "digest", "commits": [{"sha": self.target, "files": [{}]}]}
-        self.opts = SimpleNamespace(dry_run=False, work_model="codex", claude_bootstrap=False)
+        self.opts = SimpleNamespace(dry_run=False, work_model="codex", quota_bootstrap=False)
         for name, kwargs in (
             ("require_admin", {}),
             ("remote_sha", {"return_value": self.old}),
@@ -2166,6 +2166,30 @@ class Run(unittest.TestCase):
             ):
                 self.assertEqual(sa.run(SimpleNamespace(state=self.state), self.opts, min_commits=minimum), 0)
             model.assert_called_once()
+
+    def test_quota_initialization_gates_selected_provider(self):
+        from tauceti_worker.quota import Provider, Quota
+
+        cfg = SimpleNamespace(state=self.state, quota_cache=self.state / "cache")
+        self.opts.quota_bootstrap = True
+        for provider in ("codex", "claude"):
+            self.opts.work_model = provider
+            for available in (False, True):
+                with (
+                    self.subTest(provider=provider, available=available),
+                    patch.object(
+                        Quota, "authorize_launch", return_value=Provider(provider, available, None)
+                    ) as authorize,
+                    patch.object(sa, "inspect", return_value={"verdict": "pass", "findings": []}) as model,
+                    patch.object(sa, "advance", return_value=self.target),
+                ):
+                    if available:
+                        self.assertEqual(sa.run(cfg, self.opts), 0)
+                    else:
+                        with self.assertRaisesRegex(NoProgress, "quota unavailable"):
+                            sa.run(cfg, self.opts)
+                    authorize.assert_called_once_with(provider, ignore_quota=False)
+                    self.assertEqual(model.call_count, int(available))
 
     def test_block_is_not_hidden_by_small_backlog(self):
         work = self.state / sa.CURSOR
