@@ -327,6 +327,7 @@ class CodexBootstrap(unittest.TestCase):
         self.addCleanup(lambda: Path(cwd).rmdir())
         self.assertEqual(argv[:2], ["codex", "exec"])
         self.assertEqual(argv[-1], tc.QUOTA_BOOTSTRAP_PROMPT)
+        self.assertNotIn("--model", argv)
         self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
         for flag in ("--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check"):
             self.assertIn(flag, argv)
@@ -349,6 +350,70 @@ class CodexBootstrap(unittest.TestCase):
                 self.assertEqual(BOOTSTRAP_REQUEST(self.q, "codex"), expected)
                 self.assertEqual(run.call_args.kwargs["timeout"], tc.QUOTA_BOOTSTRAP_TIMEOUT_S)
                 self.assertFalse(Path(run.call_args.kwargs["cwd"]).exists())
+
+    def test_json_failure_is_reported_instead_of_stdin_notice(self):
+        for event, expected in (
+            ({"type": "turn.failed", "error": {"message": "Account quota exhausted"}}, "Account quota exhausted"),
+            ({"type": "error", "message": "Authentication failed"}, "Authentication failed"),
+            (
+                {
+                    "type": "turn.failed",
+                    "error": {
+                        "message": json.dumps(
+                            {
+                                "status": 400,
+                                "error": {"message": "This model is not supported for this account"},
+                            }
+                        )
+                    },
+                },
+                "This model is not supported for this account",
+            ),
+            (
+                {"type": "item.completed", "item": {"type": "error", "message": "Could not initialize session"}},
+                "Could not initialize session",
+            ),
+        ):
+            output = "\n".join(["not JSON", "{}", json.dumps(event), json.dumps({"type": "usage", "total": 0})])
+            result = subprocess.CompletedProcess([], 1, output, "Reading additional input from stdin...\n")
+            with self.subTest(event=event), patch.object(tc.quota.subprocess, "run", return_value=result):
+                self.assertEqual(BOOTSTRAP_REQUEST(self.q, "codex"), (False, f"codex exited 1: {expected}"))
+
+    def test_subprocess_failure_survives_in_shared_reservation(self):
+        executable = self.home / "bin" / "codex"
+        executable.parent.mkdir()
+        executable.write_text(
+            f"#!{sys.executable}\n"
+            "import json, sys\n"
+            "print('Reading additional input from stdin...', file=sys.stderr)\n"
+            "print(json.dumps({'type': 'turn.failed', 'error': {'message': 'Model access denied'}}))\n"
+            "sys.exit(1)\n"
+        )
+        executable.chmod(0o700)
+        self.boot.side_effect = BOOTSTRAP_REQUEST
+        with patch.dict(os.environ, {"PATH": str(executable.parent) + os.pathsep + os.environ.get("PATH", "")}):
+            prov = self.q.authorize_launch("codex")
+        expected = "weekly bootstrap failed: codex exited 1: Model access denied"
+        self.assertEqual(tc._unavail_reason(prov)[1], expected)
+        other = tc.Quota(self.config("second"))
+        self.assertEqual(tc._unavail_reason(other.codex())[1], expected)
+        self.assertEqual(self.boot.call_count, 1)
+
+    def test_initialization_uses_cli_default_when_authoring_model_is_unavailable(self):
+        executable = self.home / "bin" / "codex"
+        executable.parent.mkdir()
+        executable.write_text(
+            f"#!{sys.executable}\n"
+            "import json, sys\n"
+            "print('Reading additional input from stdin...', file=sys.stderr)\n"
+            "if '--model' in sys.argv:\n"
+            "    print(json.dumps({'type': 'turn.failed', 'error': {'message': 'Requested model is unavailable'}}))\n"
+            "    sys.exit(1)\n"
+            "print(json.dumps({'type': 'turn.completed', 'usage': {}}))\n"
+        )
+        executable.chmod(0o700)
+        with patch.dict(os.environ, {"PATH": str(executable.parent) + os.pathsep + os.environ.get("PATH", "")}):
+            self.assertEqual(BOOTSTRAP_REQUEST(self.q, "codex"), (True, "ok"))
 
 
 if __name__ == "__main__":

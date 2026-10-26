@@ -116,6 +116,10 @@ drops the cached usage and fetches fresh telemetry, which decides whether a roun
 may run. If initialization consumes more than the current pacing budget, the
 worker waits for that budget to catch up.
 
+Codex selects its default model for initialization independently of TauCeti's
+authoring model. An unavailable authoring model does not prevent the window from
+opening. If initialization fails, the quota status reports the provider's error.
+
 The bootstrap runs only under these conditions:
 
 - It happens at the launch stage of a round that has already found work, so a

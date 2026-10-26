@@ -26,6 +26,7 @@ from . import oauth as credential_refresh
 from .config import Config, log
 from .constants import AUTHORING_DEFAULTS, CLAUDE_CMD, POLL
 from .github import GitHubError, _parse_retry_after
+from .transcript import AgentTranscriptRenderer
 
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 
@@ -2314,12 +2315,11 @@ class Quota:
             for key in ("OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID"):
                 env.pop(key, None)
             env["CODEX_HOME"] = str(codex_dir(self.cfg.home))
+            # Initialization needs any served model; let Codex select from its account catalog.
             argv = [
                 "codex",
                 "exec",
                 "--json",
-                "--model",
-                AUTHORING_DEFAULTS["codex"][0],
                 "--sandbox",
                 "read-only",
                 "--skip-git-repo-check",
@@ -2364,7 +2364,25 @@ class Quota:
         finally:
             shutil.rmtree(cwd, ignore_errors=True)
         if p.returncode != 0:
-            return False, f"{argv[0]} exited {p.returncode}{_tail_detail(p.stderr or p.stdout)}"
+            detail = p.stderr or p.stdout
+            if provider == "codex":
+                # With --json, stderr can contain only startup notices while stdout carries the failure.
+                transcript = AgentTranscriptRenderer(provider)
+                for line in (p.stdout or "").splitlines():
+                    transcript.render_line(line)
+                if transcript.terminal_failure_text:
+                    detail = transcript.terminal_failure_text
+                    try:
+                        error = json.loads(detail)
+                    except ValueError:
+                        pass
+                    else:
+                        if isinstance(error, dict):
+                            error = error.get("error", error)
+                            if isinstance(error, dict) and isinstance(error.get("message"), str):
+                                detail = error["message"]
+                    detail = " ".join(detail.split())
+            return False, f"{argv[0]} exited {p.returncode}{_tail_detail(detail)}"
         return True, "ok"
 
     @staticmethod
